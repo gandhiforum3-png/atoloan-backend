@@ -4,3 +4,13 @@ sqlalchemy>=2.0
 asyncpg
 requests
 pytest
+python-multipart
+pdfplumber
+camelot-py
+pytesseract
+pdf2image
+pillow
+pytesseract
+pdf2image
+pillow
+pydantic==2.12.5
