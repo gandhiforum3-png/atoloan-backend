@@ -33,6 +33,7 @@ from app.services.credit_union_mutations import (
     upsert_loan_program_items
 )
 from app.services.credit_union_deletion import delete_credit_union_and_related
+from app.services.bank_finder import find_best_bank
 
 
 # Load environment variables from .env file
@@ -323,6 +324,9 @@ async def findback(request: Request) -> dict:
     payload = await request.json()
     logging.info("findback payload: %s", payload)
 
+    # Store original payload for later use
+    original_payload = payload.copy() if isinstance(payload, dict) else {}
+
     if isinstance(payload, dict) and isinstance(payload.get("contactInfo"), dict):
         contact = payload["contactInfo"]
         payload = {
@@ -368,6 +372,122 @@ async def findback(request: Request) -> dict:
 
     response = {"prequal": result.to_dict()}
     logging.info("findback response: %s", response)
+
+    # ========================================================================
+    # BANK FINDER INTEGRATION
+    # ========================================================================
+    # After getting 700Credit response, find the best bank offer
+    best_bank_offer = None
+    bank_finder_error = None
+
+    try:
+        # Extract required parameters for bank finder
+        zipcode = payload["zip_code"]
+
+        # Get down_payment from original payload
+        # First check if user entered a custom value in otherDownPayment
+        down_payment = original_payload.get("otherDownPayment")
+
+        # If no custom value, get from answers object and parse the range
+        if not down_payment:
+            answers = original_payload.get("answers", {})
+            down_payment_range = answers.get("down-payment")
+
+            if down_payment_range:
+                # Parse range like "5000-6500" to get the midpoint
+                try:
+                    if "-" in str(down_payment_range):
+                        parts = str(down_payment_range).split("-")
+                        min_val = float(parts[0].strip())
+                        max_val = float(parts[1].strip())
+                        down_payment = (min_val + max_val) / 2  # Use midpoint
+                        logging.info(f"[BANK FINDER] Parsed down payment range '{down_payment_range}' to ${down_payment}")
+                    else:
+                        # Single value, not a range
+                        down_payment = float(down_payment_range)
+                except (ValueError, IndexError) as e:
+                    logging.warning(f"[BANK FINDER] Could not parse down_payment range '{down_payment_range}': {e}")
+                    down_payment = None
+        else:
+            # Convert custom down payment to float
+            try:
+                down_payment = float(down_payment)
+            except (ValueError, TypeError):
+                logging.warning(f"[BANK FINDER] Invalid otherDownPayment value: {down_payment}")
+                down_payment = None
+
+        # Extract credit score from 700Credit response
+        # The credit score is typically in the prequal response
+        prequal_data = result.to_dict()
+        credit_score = 740
+
+        # Try to find credit score in the response structure
+        # Common locations: prequal_data.get("credit_score") or prequal_data.get("score")
+        # if isinstance(prequal_data, dict):
+            # credit_score = (
+            #     prequal_data.get("credit_score") or
+            #     prequal_data.get("score") or
+            #     prequal_data.get("fico_score")
+            # )
+
+            # # Sometimes credit score is nested in a bureau response
+            # if not credit_score and "bureau_response" in prequal_data:
+            #     bureau_data = prequal_data.get("bureau_response", {})
+            #     if isinstance(bureau_data, dict):
+            #         credit_score = (
+            #             bureau_data.get("credit_score") or
+            #             bureau_data.get("score") or
+            #             bureau_data.get("fico_score")
+            #         )
+
+        # Only run bank finder if we have all required parameters
+        if down_payment and credit_score and zipcode:
+            logging.info(
+                f"[BANK FINDER] Running with zipcode={zipcode}, "
+                f"down_payment={down_payment}, credit_score={credit_score}"
+            )
+
+            engine = get_engine()
+            async with engine.begin() as conn:
+                best_bank_offer = await find_best_bank(
+                    conn,
+                    zipcode=str(zipcode),
+                    down_payment=float(down_payment),
+                    credit_score=int(credit_score)
+                )
+
+            if best_bank_offer:
+                logging.info(
+                    f"[BANK FINDER] Found best offer: {best_bank_offer['bank_name']} "
+                    f"at {best_bank_offer['interest_rate']}"
+                )
+            else:
+                logging.warning("[BANK FINDER] No eligible banks found for user criteria")
+        else:
+            missing_params = []
+            if not down_payment:
+                missing_params.append("down_payment")
+            if not credit_score:
+                missing_params.append("credit_score (from 700Credit response)")
+            if not zipcode:
+                missing_params.append("zipcode")
+
+            logging.warning(
+                f"[BANK FINDER] Skipped - missing parameters: {', '.join(missing_params)}"
+            )
+            bank_finder_error = f"Missing required parameters: {', '.join(missing_params)}"
+
+    except Exception as e:
+        logging.exception(f"[BANK FINDER] Error finding best bank: {e}")
+        bank_finder_error = str(e)
+
+    # Add bank finder results to response
+    if best_bank_offer:
+        response["best_bank"] = best_bank_offer
+
+    if bank_finder_error:
+        response["bank_finder_error"] = bank_finder_error
+
     return response
 
 
