@@ -42,7 +42,8 @@ def test_findback_success(monkeypatch) -> None:
         def from_env(cls):
             return DummyClient()
 
-    monkeypatch.setattr(main, "SevenHundredCreditClient", DummyFactory)
+    # Patch the reference inside the findback router module
+    monkeypatch.setattr("app.api.routers.findback.SevenHundredCreditClient", DummyFactory)
 
     client = _client()
     payload = {
@@ -71,7 +72,7 @@ def test_findback_missing_credentials(monkeypatch) -> None:
         def from_env(cls):
             raise ValueError("missing credentials")
 
-    monkeypatch.setattr(main, "SevenHundredCreditClient", DummyFactory)
+    monkeypatch.setattr("app.api.routers.findback.SevenHundredCreditClient", DummyFactory)
 
     client = _client()
     payload = {

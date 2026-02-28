@@ -4,6 +4,7 @@ sqlalchemy>=2.0
 asyncpg
 requests
 pytest
+pytest-asyncio
 python-multipart
 pdfplumber
 camelot-py
@@ -11,6 +12,7 @@ pytesseract
 pdf2image
 pillow
 pydantic==2.12.5
+pydantic-settings>=2.0
 langchain>=0.1.0
 langchain-openai>=0.0.1
 python-dotenv

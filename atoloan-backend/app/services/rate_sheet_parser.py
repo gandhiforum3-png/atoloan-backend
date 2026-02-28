@@ -6,7 +6,6 @@ and extract structured data using LLM with structured output.
 """
 
 import logging
-import os
 from typing import List, Optional
 from datetime import date
 
@@ -14,6 +13,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 
+from app.core.config import get_settings
 from app.models.rate_sheet import (
     CreditUnionRateSheet,
     CreditUnionInfo,
@@ -48,15 +48,14 @@ def make_llm() -> ChatOpenAI:
     Raises:
         ValueError: If OPENAI_API_KEY is not set
     """
-    api_key = os.getenv("OPENAI_API_KEY")
-    
+    api_key = get_settings().openai_api_key
+
     if not api_key:
         raise ValueError(
-            "OPENAI_API_KEY environment variable is not set. "
-            "Please set it in your .env file or environment: "
-            "export OPENAI_API_KEY='sk-...'"
+            "OPENAI_API_KEY is not set. "
+            "Please add it to your .env file: OPENAI_API_KEY=sk-..."
         )
-    
+
     if not api_key.startswith("sk-"):
         logger.warning(
             "OPENAI_API_KEY does not start with 'sk-'. "

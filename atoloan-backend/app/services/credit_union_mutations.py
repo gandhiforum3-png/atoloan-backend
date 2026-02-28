@@ -282,30 +282,38 @@ async def upsert_rate_policy_items(conn: AsyncConnection, bank_id: int, rate_she
 
 async def upsert_loan_program_items(conn: AsyncConnection, bank_id: int, rate_sheet_data: dict) -> int:
     """
-    Upsert loan_program_items (programs, tiers, terms) and return count.
+    Replace all loan_program_items for a bank and return total inserted count.
+
+    Strategy: DELETE all existing rows for bank_id then INSERT fresh data.
+    This avoids the PostgreSQL NULL != NULL unique-constraint issue that
+    causes phantom duplicate rows when tier_name / term_in_months are NULL
+    (as they are for 'program'-type rows).
 
     Args:
         conn: Database connection
-        bank_id: Bank ID to upsert loan programs for
+        bank_id: Bank ID to replace loan programs for
         rate_sheet_data: Complete rate sheet data dict
 
     Returns:
-        Count of upserted loan program items
+        Count of inserted loan program items
     """
     loan_programs = rate_sheet_data.get("loan_programs") or []
-    count = 0
 
+    # Remove all existing rows for this bank before inserting fresh data
+    await conn.execute(
+        text("DELETE FROM loan_program_items WHERE bank_id = :bank_id"),
+        {"bank_id": bank_id},
+    )
+
+    count = 0
     for program in loan_programs:
-        # Insert program
         program_id = await upsert_program(conn, bank_id, program)
         count += 1
 
-        # Insert tiers and terms
         for tier in program.get("loan_tiers") or []:
             tier_id = await upsert_tier(conn, bank_id, program_id, program, tier)
             count += 1
 
-            # Insert terms
             for term in tier.get("term_options") or []:
                 await upsert_term(conn, bank_id, tier_id, program, tier, term)
                 count += 1
@@ -338,16 +346,6 @@ async def upsert_program(conn: AsyncConnection, bank_id: int, program: dict) -> 
             :min_model_year, :max_model_year, :mileage_limit,
             :base_ltv, :max_ltv, :ltv_notes, NOW()
         )
-        ON CONFLICT (bank_id, item_type, program_name, tier_name, term_in_months) DO UPDATE SET
-            vehicle_type = EXCLUDED.vehicle_type,
-            model_year_range = EXCLUDED.model_year_range,
-            min_model_year = EXCLUDED.min_model_year,
-            max_model_year = EXCLUDED.max_model_year,
-            mileage_limit = EXCLUDED.mileage_limit,
-            base_ltv = EXCLUDED.base_ltv,
-            max_ltv = EXCLUDED.max_ltv,
-            ltv_notes = EXCLUDED.ltv_notes,
-            updated_at = NOW()
         RETURNING loan_program_id
     """)
 
@@ -397,19 +395,6 @@ async def upsert_tier(conn: AsyncConnection, bank_id: int, parent_id: int, progr
             :base_ltv, :max_ltv, :ltv_notes,
             :credit_score_range, :min_credit_score, :max_credit_score, NOW()
         )
-        ON CONFLICT (bank_id, item_type, program_name, tier_name, term_in_months) DO UPDATE SET
-            vehicle_type = EXCLUDED.vehicle_type,
-            model_year_range = EXCLUDED.model_year_range,
-            min_model_year = EXCLUDED.min_model_year,
-            max_model_year = EXCLUDED.max_model_year,
-            mileage_limit = EXCLUDED.mileage_limit,
-            base_ltv = EXCLUDED.base_ltv,
-            max_ltv = EXCLUDED.max_ltv,
-            ltv_notes = EXCLUDED.ltv_notes,
-            credit_score_range = EXCLUDED.credit_score_range,
-            min_credit_score = EXCLUDED.min_credit_score,
-            max_credit_score = EXCLUDED.max_credit_score,
-            updated_at = NOW()
         RETURNING loan_program_id
     """)
 
@@ -466,23 +451,6 @@ async def upsert_term(conn: AsyncConnection, bank_id: int, parent_id: int, progr
             :credit_score_range, :min_credit_score, :max_credit_score,
             :min_loan_amount, :max_loan_amount, :rate, :term_conditions, NOW()
         )
-        ON CONFLICT (bank_id, item_type, program_name, tier_name, term_in_months) DO UPDATE SET
-            vehicle_type = EXCLUDED.vehicle_type,
-            model_year_range = EXCLUDED.model_year_range,
-            min_model_year = EXCLUDED.min_model_year,
-            max_model_year = EXCLUDED.max_model_year,
-            mileage_limit = EXCLUDED.mileage_limit,
-            base_ltv = EXCLUDED.base_ltv,
-            max_ltv = EXCLUDED.max_ltv,
-            ltv_notes = EXCLUDED.ltv_notes,
-            credit_score_range = EXCLUDED.credit_score_range,
-            min_credit_score = EXCLUDED.min_credit_score,
-            max_credit_score = EXCLUDED.max_credit_score,
-            min_loan_amount = EXCLUDED.min_loan_amount,
-            max_loan_amount = EXCLUDED.max_loan_amount,
-            rate = EXCLUDED.rate,
-            term_conditions = EXCLUDED.term_conditions,
-            updated_at = NOW()
     """)
 
     await conn.execute(query, {
