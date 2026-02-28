@@ -134,7 +134,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -757,3 +757,112 @@ async def parse_rate_sheet_markdown(request: Request) -> dict:
             status_code=500,
             detail=f"Rate sheet parsing failed: {str(e)}"
         ) from e
+
+
+@app.post("/uploadDocuments")
+async def upload_documents(request: Request) -> dict:
+    """
+    Upload user documents (driver's license and paycheck) for loan application.
+    
+    Accepts multipart/form-data with:
+    - drivers_license: Image file of driver's license
+    - paycheck: Image/PDF file of paycheck/pay stub
+    - user_email: (optional) User's email for organizing files
+    - user_name: (optional) User's name for organizing files
+    
+    Files are saved to user_uploaded_documents directory.
+    """
+    content_type = request.headers.get("content-type", "")
+    
+    if "multipart/form-data" not in content_type:
+        raise HTTPException(
+            status_code=400,
+            detail="Content-Type must be multipart/form-data"
+        )
+    
+    form = await request.form()
+    
+    # Create upload directory if it doesn't exist
+    upload_dir = Path("user_uploaded_documents")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Extract optional metadata
+    user_email = form.get("user_email", "unknown")
+    user_name = form.get("user_name", "unknown")
+    
+    # Create a timestamp-based subfolder for this submission
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_name = "".join(c if c.isalnum() else "_" for c in str(user_name))
+    submission_dir = upload_dir / f"{timestamp}_{safe_name}"
+    submission_dir.mkdir(parents=True, exist_ok=True)
+    
+    uploaded_files = []
+    errors = []
+    
+    # Process drivers_license
+    drivers_license = form.get("drivers_license")
+    if drivers_license and hasattr(drivers_license, "filename") and drivers_license.filename:
+        try:
+            filename = Path(drivers_license.filename).name
+            # Sanitize filename
+            safe_filename = f"drivers_license_{filename}"
+            target_path = submission_dir / safe_filename
+            content = await drivers_license.read()
+            target_path.write_bytes(content)
+            uploaded_files.append({
+                "field": "drivers_license",
+                "filename": safe_filename,
+                "path": str(target_path),
+                "size": len(content)
+            })
+            logging.info(f"[UPLOAD] Saved driver's license: {target_path}")
+        except Exception as e:
+            errors.append(f"Failed to save driver's license: {str(e)}")
+            logging.exception("Failed to save driver's license")
+    else:
+        errors.append("drivers_license file is required")
+    
+    # Process paycheck
+    paycheck = form.get("paycheck")
+    if paycheck and hasattr(paycheck, "filename") and paycheck.filename:
+        try:
+            filename = Path(paycheck.filename).name
+            # Sanitize filename
+            safe_filename = f"paycheck_{filename}"
+            target_path = submission_dir / safe_filename
+            content = await paycheck.read()
+            target_path.write_bytes(content)
+            uploaded_files.append({
+                "field": "paycheck",
+                "filename": safe_filename,
+                "path": str(target_path),
+                "size": len(content)
+            })
+            logging.info(f"[UPLOAD] Saved paycheck: {target_path}")
+        except Exception as e:
+            errors.append(f"Failed to save paycheck: {str(e)}")
+            logging.exception("Failed to save paycheck")
+    else:
+        errors.append("paycheck file is required")
+    
+    # Return response
+    if len(uploaded_files) == 2:
+        return {
+            "status": "success",
+            "message": "Documents uploaded successfully",
+            "submission_id": f"{timestamp}_{safe_name}",
+            "files": uploaded_files
+        }
+    elif uploaded_files:
+        return {
+            "status": "partial",
+            "message": "Some documents uploaded",
+            "submission_id": f"{timestamp}_{safe_name}",
+            "files": uploaded_files,
+            "errors": errors
+        }
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No documents uploaded: {'; '.join(errors)}"
+        )
