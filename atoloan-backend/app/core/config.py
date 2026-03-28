@@ -1,10 +1,22 @@
 """
-Centralised application settings loaded from environment / .env file.
+Centralised application settings.
+
+Secret loading priority (highest → lowest):
+  1. Environment variables  — set by Vault Agent sidecar in Kubernetes
+                              (sources /vault/secrets/*.env before uvicorn starts)
+  2. .env file              — used for local development only; silently ignored
+                              when absent (e.g. inside a container)
+
+Non-secret config (PGHOST, PGPORT, PGDATABASE, SEVENCREDIT_ENV, CORS_ORIGINS)
+is supplied via the Kubernetes ConfigMap (backend.yaml / backend-dev.yaml) for
+deployed environments and via the .env file locally.
 """
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 
 class Settings(BaseSettings):
@@ -27,10 +39,13 @@ class Settings(BaseSettings):
     sevencredit_client_secret: str = ""
 
     # CORS allowed origins (comma-separated)
+    # Set via CORS_ORIGINS env var (ConfigMap) or .env for local dev
     cors_origins: str = "http://localhost:5173,http://localhost:5174"
 
     model_config = SettingsConfigDict(
-        env_file=str(Path(__file__).resolve().parents[2] / ".env"),
+        # env_file is silently ignored when the file does not exist,
+        # so this is safe inside containers where there is no .env file.
+        env_file=str(_ENV_FILE) if _ENV_FILE.exists() else None,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
