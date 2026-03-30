@@ -1,51 +1,17 @@
 ---
 # ─────────────────────────────────────────────────────────────────────────────
-# Vault Token Secret (dev)
-# Replace "root" with a scoped read-only Vault token for the dev environment.
-# ─────────────────────────────────────────────────────────────────────────────
-apiVersion: v1
-kind: Secret
-metadata:
-  name: vault-token
-  namespace: default
-type: Opaque
-stringData:
-  token: "root"   # replace with a scoped read-only token
-
----
-# ─────────────────────────────────────────────────────────────────────────────
-# SecretStore — points External Secrets at the dev Vault
-# ─────────────────────────────────────────────────────────────────────────────
-apiVersion: external-secrets.io/v1
-kind: SecretStore
-metadata:
-  name: vault-backend
-  namespace: default
-spec:
-  provider:
-    vault:
-      server: "http://host.minikube.internal:8200"
-      path: "secret"
-      version: "v2"
-      auth:
-        tokenSecretRef:
-          name: vault-token
-          key: token
-
----
-# ─────────────────────────────────────────────────────────────────────────────
 # ExternalSecrets — sync secrets from Vault into K8s Secret objects (dev paths)
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
   name: atoloan-postgres-secret
-  namespace: default
+  namespace: atoloan-backend
 spec:
   refreshInterval: 1h
   secretStoreRef:
-    name: vault-backend
-    kind: SecretStore
+    name: secret-store
+    kind: ClusterSecretStore
   target:
     name: atoloan-postgres-secret
     creationPolicy: Owner
@@ -64,12 +30,12 @@ apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
   name: atoloan-openai-secret
-  namespace: default
+  namespace: atoloan-backend
 spec:
   refreshInterval: 1h
   secretStoreRef:
-    name: vault-backend
-    kind: SecretStore
+    name: secret-store
+    kind: ClusterSecretStore
   target:
     name: atoloan-openai-secret
     creationPolicy: Owner
@@ -84,12 +50,12 @@ apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
   name: atoloan-sevencredit-secret
-  namespace: default
+  namespace: atoloan-backend
 spec:
   refreshInterval: 1h
   secretStoreRef:
-    name: vault-backend
-    kind: SecretStore
+    name: secret-store
+    kind: ClusterSecretStore
   target:
     name: atoloan-sevencredit-secret
     creationPolicy: Owner
@@ -119,14 +85,14 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: atoloan-api-config
-  namespace: default
+  namespace: atoloan-backend
 data:
   APP_ENV: "dev"
   PGHOST: "postgres-svc.atoloan-postgres.svc.cluster.local"
   PGPORT: "5432"
   PGDATABASE: "atoloandb"
   SEVENCREDIT_ENV: "test"
-  CORS_ORIGINS: "https://dev.atoloan.com"
+  CORS_ORIGINS: "http://dev.atoloan.com"
 
 ---
 # ─────────────────────────────────────────────────────────────────────────────
@@ -136,7 +102,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: upload-pdfs
-  namespace: default
+  namespace: atoloan-backend
 spec:
   accessModes:
     - ReadWriteOnce
@@ -150,7 +116,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: user-docs
-  namespace: default
+  namespace: atoloan-backend
 spec:
   accessModes:
     - ReadWriteOnce
@@ -167,7 +133,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: atoloan-api
-  namespace: default
+  namespace: atoloan-backend
   labels:
     app: atoloan-api
 spec:
@@ -182,8 +148,8 @@ spec:
     spec:
       containers:
         - name: api
-          image: atoloan-api:latest  # replace with your image
-          imagePullPolicy: Never
+          image: gandhiforum3/atoloan-api:latest
+          imagePullPolicy: Always
 
           command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
@@ -277,7 +243,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: atoloan-api
-  namespace: default
+  namespace: atoloan-backend
 spec:
   selector:
     app: atoloan-api
