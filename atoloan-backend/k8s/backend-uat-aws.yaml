@@ -1,0 +1,278 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# ExternalSecrets — sync secrets from AWS Secrets Manager
+# Note: Postgres secrets come from rds-secret (already synced via infra repo)
+# ClusterSecretStore is managed by the infra repo (secret-store-aws-dev.yaml)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: atoloan-openai-secret
+  namespace: atoloan-backend-uat
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: secret-store
+    kind: ClusterSecretStore
+  target:
+    name: atoloan-openai-secret
+    creationPolicy: Owner
+  data:
+    - secretKey: OPENAI_API_KEY
+      remoteRef:
+        key: atoloan/openai
+        property: OPENAI_API_KEY
+
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: atoloan-sevencredit-secret
+  namespace: atoloan-backend-uat
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: secret-store
+    kind: ClusterSecretStore
+  target:
+    name: atoloan-sevencredit-secret
+    creationPolicy: Owner
+  data:
+    - secretKey: SEVENCREDIT_ACCOUNT
+      remoteRef:
+        key: atoloan/sevencredit
+        property: SEVENCREDIT_ACCOUNT
+    - secretKey: SEVENCREDIT_PASSWORD
+      remoteRef:
+        key: atoloan/sevencredit
+        property: SEVENCREDIT_PASSWORD
+    - secretKey: SEVENCREDIT_CLIENT_ID
+      remoteRef:
+        key: atoloan/sevencredit
+        property: SEVENCREDIT_CLIENT_ID
+    - secretKey: SEVENCREDIT_CLIENT_SECRET
+      remoteRef:
+        key: atoloan/sevencredit
+        property: SEVENCREDIT_CLIENT_SECRET
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# ConfigMap — non-secret configuration (uat-aws)
+# PG vars are omitted here — they come from rds-secret
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: atoloan-api-config
+  namespace: atoloan-backend-uat
+data:
+  APP_ENV: "uat"
+  SEVENCREDIT_ENV: "test"
+  CORS_ORIGINS: "http://uat.atoloan.com"
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# PersistentVolumeClaims — local-path (k3s default storage class)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: upload-pdfs
+  namespace: atoloan-backend-uat
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: local-path
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: user-docs
+  namespace: atoloan-backend-uat
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: local-path
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Deployment (uat-aws)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atoloan-api
+  namespace: atoloan-backend-uat
+  labels:
+    app: atoloan-api
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: atoloan-api
+  template:
+    metadata:
+      labels:
+        app: atoloan-api
+    spec:
+      containers:
+        - name: api
+          image: gandhiforum3/atoloan-api:latest
+          imagePullPolicy: Always
+
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+          ports:
+            - containerPort: 8000
+
+          # Non-secret config from ConfigMap
+          envFrom:
+            - configMapRef:
+                name: atoloan-api-config
+
+          # Secrets
+          env:
+            # Postgres — from existing rds-secret (managed by infra repo)
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: rds-secret
+                  key: PGHOST
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef:
+                  name: rds-secret
+                  key: PGPORT
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: rds-secret
+                  key: PGDATABASE
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: rds-secret
+                  key: PGUSER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rds-secret
+                  key: PGPASSWORD
+            # OpenAI — from AWS Secrets Manager via ESO
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-openai-secret
+                  key: OPENAI_API_KEY
+            # SevenCredit — from AWS Secrets Manager via ESO
+            - name: SEVENCREDIT_ACCOUNT
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-sevencredit-secret
+                  key: SEVENCREDIT_ACCOUNT
+            - name: SEVENCREDIT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-sevencredit-secret
+                  key: SEVENCREDIT_PASSWORD
+            - name: SEVENCREDIT_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-sevencredit-secret
+                  key: SEVENCREDIT_CLIENT_ID
+            - name: SEVENCREDIT_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-sevencredit-secret
+                  key: SEVENCREDIT_CLIENT_SECRET
+
+          volumeMounts:
+            - name: upload-pdfs
+              mountPath: /app/upload_pdf
+            - name: user-docs
+              mountPath: /app/user_uploaded_documents
+
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "750m"
+              memory: "768Mi"
+
+          readinessProbe:
+            httpGet:
+              path: /hello
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /hello
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+
+      volumes:
+        - name: upload-pdfs
+          persistentVolumeClaim:
+            claimName: upload-pdfs
+        - name: user-docs
+          persistentVolumeClaim:
+            claimName: user-docs
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Service
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: atoloan-api
+  namespace: atoloan-backend-uat
+spec:
+  selector:
+    app: atoloan-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+  type: ClusterIP
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Ingress — nginx (no TLS for local access)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: atoloan-api-ingress
+  namespace: atoloan-backend-uat
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/enable-cors: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.uat.atoloan.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: atoloan-api
+                port:
+                  number: 80
