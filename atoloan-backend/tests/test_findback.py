@@ -1,4 +1,5 @@
 import os
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -34,26 +35,30 @@ def test_findback_success(monkeypatch) -> None:
     _disable_db_checks(monkeypatch)
 
     class DummyClient:
+        def __init__(self, **_kw):
+            pass
+
         def send_prequalify(self, **_kwargs) -> PrequalResult:
             return PrequalResult(raw_xml="<xml/>", result_code="0", tier="A")
 
-    class DummyFactory:
-        @classmethod
-        def from_env(cls):
-            return DummyClient()
-
-    # Patch the reference inside the findback router module
-    monkeypatch.setattr("app.api.routers.findback.SevenHundredCreditClient", DummyFactory)
+    monkeypatch.setattr("app.api.routers.findback.SevenHundredCreditClient", DummyClient)
 
     client = _client()
     payload = {
         "first_name": "Blackwell",
         "last_name": "Phillip",
+        "email": "blackwell@example.com",
         "address": "800 Rice Valley N",
         "city": "Tuscaloosa",
         "state": "AL",
         "zip_code": "80134",
     }
+
+    # Patch save so it doesn't hit the DB
+    monkeypatch.setattr(
+        "app.api.routers.findback.save_findback_result",
+        AsyncMock(return_value=1),
+    )
 
     resp = client.post("/findback", json=payload)
 
@@ -68,8 +73,7 @@ def test_findback_missing_credentials(monkeypatch) -> None:
     _disable_db_checks(monkeypatch)
 
     class DummyFactory:
-        @classmethod
-        def from_env(cls):
+        def __init__(self, **_kw):
             raise ValueError("missing credentials")
 
     monkeypatch.setattr("app.api.routers.findback.SevenHundredCreditClient", DummyFactory)
@@ -78,6 +82,7 @@ def test_findback_missing_credentials(monkeypatch) -> None:
     payload = {
         "first_name": "Blackwell",
         "last_name": "Phillip",
+        "email": "blackwell@example.com",
         "address": "800 Rice Valley N",
         "city": "Tuscaloosa",
         "state": "AL",
@@ -100,6 +105,7 @@ def test_findback_integration(monkeypatch) -> None:
     payload = {
         "first_name": "Blackwell",
         "last_name": "Phillip",
+        "email": "blackwell@example.com",
         "address": "800 Rice Valley N",
         "city": "Tuscaloosa",
         "state": "AL",
@@ -107,6 +113,11 @@ def test_findback_integration(monkeypatch) -> None:
         "bureau": "TU",
         "app_modified": False,
     }
+
+    monkeypatch.setattr(
+        "app.api.routers.findback.save_findback_result",
+        AsyncMock(return_value=1),
+    )
 
     resp = client.post("/findback", json=payload)
 

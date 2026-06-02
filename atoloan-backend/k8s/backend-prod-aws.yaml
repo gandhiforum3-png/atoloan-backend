@@ -1,13 +1,15 @@
 ---
 # ─────────────────────────────────────────────────────────────────────────────
 # ExternalSecrets — sync secrets from AWS Secrets Manager into K8s Secret objects
-# ClusterSecretStore is managed by the infra repo (secret-store-aws-dev.yaml)
+# ClusterSecretStore is managed by the infra repo (secret-store-aws-prod.yaml)
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Postgres credentials + host (all stored together in atoloan/postgres-prod)
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
   name: atoloan-postgres-secret
-  namespace: atoloan-backend-dev
+  namespace: atoloan-backend-prod
 spec:
   refreshInterval: 1h
   secretStoreRef:
@@ -19,19 +21,31 @@ spec:
   data:
     - secretKey: PGUSER
       remoteRef:
-        key: atoloan/postgres
+        key: atoloan/postgres-prod
         property: PGUSER
     - secretKey: PGPASSWORD
       remoteRef:
-        key: atoloan/postgres
+        key: atoloan/postgres-prod
         property: PGPASSWORD
+    - secretKey: PGHOST
+      remoteRef:
+        key: atoloan/postgres-prod
+        property: PGHOST
+    - secretKey: PGPORT
+      remoteRef:
+        key: atoloan/postgres-prod
+        property: PGPORT
+    - secretKey: PGDATABASE
+      remoteRef:
+        key: atoloan/postgres-prod
+        property: PGDATABASE
 
 ---
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
   name: atoloan-openai-secret
-  namespace: atoloan-backend-dev
+  namespace: atoloan-backend-prod
 spec:
   refreshInterval: 1h
   secretStoreRef:
@@ -51,7 +65,7 @@ apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
   name: atoloan-sevencredit-secret
-  namespace: atoloan-backend-dev
+  namespace: atoloan-backend-prod
 spec:
   refreshInterval: 1h
   secretStoreRef:
@@ -80,20 +94,19 @@ spec:
 
 ---
 # ─────────────────────────────────────────────────────────────────────────────
-# ConfigMap — non-secret configuration (dev-aws)
+# ConfigMap — non-secret configuration (prod-aws)
+# Note: PGHOST / PGPORT / PGDATABASE come from the postgres secret in prod
+# (secrets-prod.tf stores them all in atoloan/postgres-prod)
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: atoloan-api-config
-  namespace: atoloan-backend-dev
+  namespace: atoloan-backend-prod
 data:
-  APP_ENV: "dev"
-  PGHOST: "postgres-svc.atoloan-postgres-dev.svc.cluster.local"
-  PGPORT: "5432"
-  PGDATABASE: "atoloandb"
-  SEVENCREDIT_ENV: "test"
-  CORS_ORIGINS: "http://dev-aws.atoloan.com,https://dev-aws.atoloan.com"
+  APP_ENV: "prod"
+  SEVENCREDIT_ENV: "prod"
+  CORS_ORIGINS: "https://atoloans.com,https://www.atoloans.com"
 
 ---
 # ─────────────────────────────────────────────────────────────────────────────
@@ -103,13 +116,13 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: upload-pdfs
-  namespace: atoloan-backend-dev
+  namespace: atoloan-backend-prod
 spec:
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 1Gi
+      storage: 5Gi
   storageClassName: local-path
 
 ---
@@ -117,30 +130,35 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: user-docs
-  namespace: atoloan-backend-dev
+  namespace: atoloan-backend-prod
 spec:
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 1Gi
+      storage: 5Gi
   storageClassName: local-path
 
 ---
 # ─────────────────────────────────────────────────────────────────────────────
-# Deployment (dev-aws)
+# Deployment (prod-aws)
+# 2 replicas across server + agent node (t3.small × 2)
+# RollingUpdate ensures zero downtime on redeploy
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: atoloan-api
-  namespace: atoloan-backend-dev
+  namespace: atoloan-backend-prod
   labels:
     app: atoloan-api
 spec:
-  replicas: 1
+  replicas: 2
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: atoloan-api
@@ -157,6 +175,13 @@ spec:
           envFrom:
             - configMapRef:
                 name: atoloan-api-config
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
           env:
             - name: PGUSER
               valueFrom:
@@ -168,6 +193,21 @@ spec:
                 secretKeyRef:
                   name: atoloan-postgres-secret
                   key: PGPASSWORD
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-postgres-secret
+                  key: PGHOST
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-postgres-secret
+                  key: PGPORT
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-postgres-secret
+                  key: PGDATABASE
 
       containers:
         - name: api
@@ -196,6 +236,21 @@ spec:
                 secretKeyRef:
                   name: atoloan-postgres-secret
                   key: PGPASSWORD
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-postgres-secret
+                  key: PGHOST
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-postgres-secret
+                  key: PGPORT
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-postgres-secret
+                  key: PGDATABASE
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -230,11 +285,11 @@ spec:
 
           resources:
             requests:
-              cpu: "200m"
-              memory: "256Mi"
+              cpu: "300m"
+              memory: "512Mi"
             limits:
-              cpu: "750m"
-              memory: "768Mi"
+              cpu: "1000m"
+              memory: "1Gi"
 
           readinessProbe:
             httpGet:
@@ -242,6 +297,7 @@ spec:
               port: 8000
             initialDelaySeconds: 10
             periodSeconds: 10
+            failureThreshold: 3
 
           livenessProbe:
             httpGet:
@@ -249,6 +305,7 @@ spec:
               port: 8000
             initialDelaySeconds: 30
             periodSeconds: 30
+            failureThreshold: 3
 
       volumes:
         - name: upload-pdfs
@@ -266,7 +323,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: atoloan-api
-  namespace: atoloan-backend-dev
+  namespace: atoloan-backend-prod
 spec:
   selector:
     app: atoloan-api
@@ -278,21 +335,26 @@ spec:
 
 ---
 # ─────────────────────────────────────────────────────────────────────────────
-# Ingress — nginx + cert-manager (matches infra setup)
+# Ingress — nginx + cert-manager TLS (api.atoloans.com)
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: atoloan-api-ingress
-  namespace: atoloan-backend-dev
+  namespace: atoloan-backend-prod
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
     nginx.ingress.kubernetes.io/enable-cors: "false"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.atoloans.com
+      secretName: atoloan-api-tls
   rules:
-    - host: dev-aws.api.atoloan.com
+    - host: api.atoloans.com
       http:
         paths:
           - path: /

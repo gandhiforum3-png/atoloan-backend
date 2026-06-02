@@ -12,6 +12,7 @@ from app.core.dependencies import get_conn
 from app.db import get_engine
 from app.integrations.seven_hundred import SevenHundredCreditClient
 from app.services.bank_finder import find_best_bank
+from app.services.loan_application_mutations import save_findback_result
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,8 @@ async def findback(request: Request) -> dict:
         payload = {
             "first_name": contact.get("firstName"),
             "last_name": contact.get("lastName"),
+            "email": contact.get("email"),
+            "phone_number": contact.get("phone"),
             "address": contact.get("address"),
             "city": contact.get("city"),
             "state": contact.get("state"),
@@ -48,7 +51,7 @@ async def findback(request: Request) -> dict:
             "extra_fields": payload.get("extra_fields"),
         }
 
-    required = ["first_name", "last_name", "address", "city", "state", "zip_code"]
+    required = ["first_name", "last_name", "address", "city", "state", "zip_code", "email"]
     missing = [k for k in required if not payload.get(k)]
     if missing:
         raise HTTPException(
@@ -93,6 +96,7 @@ async def findback(request: Request) -> dict:
     credit_score = 740  # placeholder until 700Credit returns an actual score
     zipcode = payload.get("zip_code")
 
+    best_offer = None
     if down_payment and credit_score and zipcode:
         try:
             async with get_engine().begin() as conn:
@@ -118,6 +122,29 @@ async def findback(request: Request) -> dict:
             if not v
         ]
         logger.warning("Bank finder skipped — missing: %s", ", ".join(missing_params))
+
+    # --- Persist user + loan application ---
+    try:
+        async with get_engine().begin() as conn:
+            app_id = await save_findback_result(
+                conn,
+                email=payload["email"],
+                first_name=payload["first_name"],
+                last_name=payload["last_name"],
+                address=payload.get("address"),
+                city=payload.get("city"),
+                state=payload.get("state"),
+                zipcode=zipcode,
+                phone_number=payload.get("phone_number"),
+                down_payment=float(down_payment) if down_payment else None,
+                credit_score=int(credit_score) if credit_score else None,
+                prequal=result.to_dict(),
+                best_bank=best_offer,
+            )
+        response["application_id"] = app_id
+        logger.info("Saved loan application id=%d for %s", app_id, payload["email"])
+    except Exception:
+        logger.exception("Failed to save loan application — continuing")
 
     return response
 

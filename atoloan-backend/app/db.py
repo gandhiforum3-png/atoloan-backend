@@ -7,6 +7,7 @@ from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.models.user_table import metadata
+import app.models.loan_application_table  # registers loan_applications in shared metadata  # noqa: F401
 
 _engine: Optional[AsyncEngine] = None
 
