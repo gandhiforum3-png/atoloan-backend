@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from app.services.pdf_parser_v2 import parse_pdf
+from app.services.pdf_parser_hybrid import parse_pdf
 from app.services.pdf_validator import validate_pdf_to_markdown
 from app.services.rate_sheet_parser import parse_rate_sheet_from_markdown
 
@@ -114,6 +114,7 @@ async def ratesheetuploader(request: Request) -> dict:
             {
                 "filename": filename,
                 "parse_error": parse_error,
+                "parser_used": parsed.get("parser_used") if parsed else None,
                 "validation": validation,
                 "rate_sheet": rate_sheet_data,
             }

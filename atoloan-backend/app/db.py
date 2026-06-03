@@ -7,6 +7,7 @@ from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.models.user_table import metadata
+import app.models.loan_application_table  # registers loan_applications in shared metadata  # noqa: F401
 
 _engine: Optional[AsyncEngine] = None
 
@@ -17,10 +18,10 @@ def get_database_url(
     user: str | None = None,
     password: str | None = None,
     dbname: str | None = None,
-) -> str:
-    url = os.getenv("DATABASE_URL", "").strip()
-    if url:
-        return url
+) -> URL:
+    raw = os.getenv("DATABASE_URL", "").strip()
+    if raw:
+        return URL.create(raw) if isinstance(raw, str) else raw
 
     resolved_host = host or os.getenv("PGHOST", "localhost")
     resolved_port = port or os.getenv("PGPORT", "5432")
@@ -33,15 +34,16 @@ def get_database_url(
     except ValueError as exc:
         raise ValueError("PGPORT must be an integer") from exc
 
-    return str(
-        URL.create(
-            "postgresql+asyncpg",
-            username=resolved_user,
-            password=resolved_password,
-            host=resolved_host,
-            port=port_value,
-            database=resolved_dbname,
-        )
+    # Return the URL object directly — never convert to str().
+    # SQLAlchemy 2.0 masks the password as "***" in str(URL), so passing
+    # the string to create_async_engine would send "***" as the password.
+    return URL.create(
+        "postgresql+asyncpg",
+        username=resolved_user,
+        password=resolved_password,
+        host=resolved_host,
+        port=port_value,
+        database=resolved_dbname,
     )
 
 

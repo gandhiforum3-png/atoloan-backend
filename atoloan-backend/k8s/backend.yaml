@@ -1,0 +1,316 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Vault Token Secret
+# Holds the token External Secrets uses to authenticate with Vault.
+# Replace "root" with a scoped, read-only Vault token for production.
+# Create/rotate it with: kubectl create secret generic vault-token \
+#   --from-literal=token=<your-token> -n default --dry-run=client -o yaml | kubectl apply -f -
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-token
+  namespace: default
+type: Opaque
+stringData:
+  token: "root"   # replace with a scoped read-only token
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# SecretStore — tells External Secrets how to reach Vault
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: vault-backend
+  namespace: default
+spec:
+  provider:
+    vault:
+      server: "http://dev.vault.atoloan.com"
+      path: "secret"        # KV mount name
+      version: "v2"
+      auth:
+        tokenSecretRef:
+          name: vault-token
+          key: token
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# ExternalSecrets — pull secrets from Vault and create K8s Secret objects
+# External Secrets operator refreshes these on the interval below.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: atoloan-postgres-secret
+  namespace: default
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-backend
+    kind: SecretStore
+  target:
+    name: atoloan-postgres-secret
+    creationPolicy: Owner
+  data:
+    - secretKey: PGUSER
+      remoteRef:
+        key: atoloan/prod/postgres
+        property: PGUSER
+    - secretKey: PGPASSWORD
+      remoteRef:
+        key: atoloan/prod/postgres
+        property: PGPASSWORD
+
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: atoloan-openai-secret
+  namespace: default
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-backend
+    kind: SecretStore
+  target:
+    name: atoloan-openai-secret
+    creationPolicy: Owner
+  data:
+    - secretKey: OPENAI_API_KEY
+      remoteRef:
+        key: atoloan/prod/openai
+        property: OPENAI_API_KEY
+
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: atoloan-sevencredit-secret
+  namespace: default
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-backend
+    kind: SecretStore
+  target:
+    name: atoloan-sevencredit-secret
+    creationPolicy: Owner
+  data:
+    - secretKey: SEVENCREDIT_ACCOUNT
+      remoteRef:
+        key: atoloan/prod/sevencredit
+        property: SEVENCREDIT_ACCOUNT
+    - secretKey: SEVENCREDIT_PASSWORD
+      remoteRef:
+        key: atoloan/prod/sevencredit
+        property: SEVENCREDIT_PASSWORD
+    - secretKey: SEVENCREDIT_CLIENT_ID
+      remoteRef:
+        key: atoloan/prod/sevencredit
+        property: SEVENCREDIT_CLIENT_ID
+    - secretKey: SEVENCREDIT_CLIENT_SECRET
+      remoteRef:
+        key: atoloan/prod/sevencredit
+        property: SEVENCREDIT_CLIENT_SECRET
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# ConfigMap — non-secret configuration
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: atoloan-api-config
+  namespace: default
+data:
+  APP_ENV: "prod"
+  PGHOST: "postgres"          # postgres service is in the same (default) namespace
+  PGPORT: "5432"
+  PGDATABASE: "atoloan_prod"
+  SEVENCREDIT_ENV: "prod"
+  CORS_ORIGINS: "https://atoloan.com"
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# PersistentVolumeClaims
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: upload-pdfs
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: standard
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: user-docs
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: standard
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Deployment
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atoloan-api
+  namespace: default
+  labels:
+    app: atoloan-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: atoloan-api
+  template:
+    metadata:
+      labels:
+        app: atoloan-api
+    spec:
+      containers:
+        - name: api
+          image: your-registry/atoloan-api:latest  # replace with your image
+          imagePullPolicy: Always
+
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+          ports:
+            - containerPort: 8000
+
+          # Non-secret config from ConfigMap
+          envFrom:
+            - configMapRef:
+                name: atoloan-api-config
+
+          # Secrets from Vault (via External Secrets operator)
+          env:
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-postgres-secret
+                  key: PGUSER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-postgres-secret
+                  key: PGPASSWORD
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-openai-secret
+                  key: OPENAI_API_KEY
+            - name: SEVENCREDIT_ACCOUNT
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-sevencredit-secret
+                  key: SEVENCREDIT_ACCOUNT
+            - name: SEVENCREDIT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-sevencredit-secret
+                  key: SEVENCREDIT_PASSWORD
+            - name: SEVENCREDIT_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-sevencredit-secret
+                  key: SEVENCREDIT_CLIENT_ID
+            - name: SEVENCREDIT_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-sevencredit-secret
+                  key: SEVENCREDIT_CLIENT_SECRET
+
+          volumeMounts:
+            - name: upload-pdfs
+              mountPath: /app/upload_pdf
+            - name: user-docs
+              mountPath: /app/user_uploaded_documents
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+
+          readinessProbe:
+            httpGet:
+              path: /hello
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /hello
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+
+      volumes:
+        - name: upload-pdfs
+          persistentVolumeClaim:
+            claimName: upload-pdfs
+        - name: user-docs
+          persistentVolumeClaim:
+            claimName: user-docs
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Service
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: atoloan-api
+  namespace: default
+spec:
+  selector:
+    app: atoloan-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+  type: ClusterIP
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# (Optional) Ingress — uncomment and fill in your hostname
+# ─────────────────────────────────────────────────────────────────────────────
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: atoloan-api
+#   namespace: default
+#   annotations:
+#     kubernetes.io/ingress.class: nginx
+# spec:
+#   rules:
+#     - host: dev.api.atoloan.com
+#       http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               service:
+#                 name: atoloan-api
+#                 port:
+#                   number: 80

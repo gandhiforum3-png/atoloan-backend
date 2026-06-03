@@ -1,0 +1,304 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# ExternalSecrets — sync secrets from AWS Secrets Manager into K8s Secret objects
+# ClusterSecretStore is managed by the infra repo (secret-store-aws-dev.yaml)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: atoloan-postgres-secret
+  namespace: atoloan-backend-dev
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: secret-store
+    kind: ClusterSecretStore
+  target:
+    name: atoloan-postgres-secret
+    creationPolicy: Owner
+  data:
+    - secretKey: PGUSER
+      remoteRef:
+        key: atoloan/postgres
+        property: PGUSER
+    - secretKey: PGPASSWORD
+      remoteRef:
+        key: atoloan/postgres
+        property: PGPASSWORD
+
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: atoloan-openai-secret
+  namespace: atoloan-backend-dev
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: secret-store
+    kind: ClusterSecretStore
+  target:
+    name: atoloan-openai-secret
+    creationPolicy: Owner
+  data:
+    - secretKey: OPENAI_API_KEY
+      remoteRef:
+        key: atoloan/openai
+        property: OPENAI_API_KEY
+
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: atoloan-sevencredit-secret
+  namespace: atoloan-backend-dev
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: secret-store
+    kind: ClusterSecretStore
+  target:
+    name: atoloan-sevencredit-secret
+    creationPolicy: Owner
+  data:
+    - secretKey: SEVENCREDIT_ACCOUNT
+      remoteRef:
+        key: atoloan/sevencredit
+        property: SEVENCREDIT_ACCOUNT
+    - secretKey: SEVENCREDIT_PASSWORD
+      remoteRef:
+        key: atoloan/sevencredit
+        property: SEVENCREDIT_PASSWORD
+    - secretKey: SEVENCREDIT_CLIENT_ID
+      remoteRef:
+        key: atoloan/sevencredit
+        property: SEVENCREDIT_CLIENT_ID
+    - secretKey: SEVENCREDIT_CLIENT_SECRET
+      remoteRef:
+        key: atoloan/sevencredit
+        property: SEVENCREDIT_CLIENT_SECRET
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# ConfigMap — non-secret configuration (dev-aws)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: atoloan-api-config
+  namespace: atoloan-backend-dev
+data:
+  APP_ENV: "dev"
+  PGHOST: "postgres-svc.atoloan-postgres-dev.svc.cluster.local"
+  PGPORT: "5432"
+  PGDATABASE: "atoloandb"
+  SEVENCREDIT_ENV: "test"
+  CORS_ORIGINS: "http://dev-aws.atoloan.com,https://dev-aws.atoloan.com"
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# PersistentVolumeClaims — local-path (k3s default storage class)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: upload-pdfs
+  namespace: atoloan-backend-dev
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: local-path
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: user-docs
+  namespace: atoloan-backend-dev
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: local-path
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Deployment (dev-aws)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atoloan-api
+  namespace: atoloan-backend-dev
+  labels:
+    app: atoloan-api
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: atoloan-api
+  template:
+    metadata:
+      labels:
+        app: atoloan-api
+    spec:
+      initContainers:
+        - name: db-migrate
+          image: gandhiforum3/atoloan-api:latest
+          imagePullPolicy: Always
+          command: ["python", "scripts/run_migrations.py"]
+          envFrom:
+            - configMapRef:
+                name: atoloan-api-config
+          env:
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-postgres-secret
+                  key: PGUSER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-postgres-secret
+                  key: PGPASSWORD
+
+      containers:
+        - name: api
+          image: gandhiforum3/atoloan-api:latest
+          imagePullPolicy: Always
+
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+          ports:
+            - containerPort: 8000
+
+          # Non-secret config from ConfigMap
+          envFrom:
+            - configMapRef:
+                name: atoloan-api-config
+
+          # Secrets from AWS Secrets Manager (via External Secrets Operator)
+          env:
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-postgres-secret
+                  key: PGUSER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-postgres-secret
+                  key: PGPASSWORD
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-openai-secret
+                  key: OPENAI_API_KEY
+            - name: SEVENCREDIT_ACCOUNT
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-sevencredit-secret
+                  key: SEVENCREDIT_ACCOUNT
+            - name: SEVENCREDIT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-sevencredit-secret
+                  key: SEVENCREDIT_PASSWORD
+            - name: SEVENCREDIT_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-sevencredit-secret
+                  key: SEVENCREDIT_CLIENT_ID
+            - name: SEVENCREDIT_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-sevencredit-secret
+                  key: SEVENCREDIT_CLIENT_SECRET
+
+          volumeMounts:
+            - name: upload-pdfs
+              mountPath: /app/upload_pdf
+            - name: user-docs
+              mountPath: /app/user_uploaded_documents
+
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "750m"
+              memory: "768Mi"
+
+          readinessProbe:
+            httpGet:
+              path: /hello
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /hello
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+
+      volumes:
+        - name: upload-pdfs
+          persistentVolumeClaim:
+            claimName: upload-pdfs
+        - name: user-docs
+          persistentVolumeClaim:
+            claimName: user-docs
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Service
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: atoloan-api
+  namespace: atoloan-backend-dev
+spec:
+  selector:
+    app: atoloan-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+  type: ClusterIP
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Ingress — nginx + cert-manager (matches infra setup)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: atoloan-api-ingress
+  namespace: atoloan-backend-dev
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/enable-cors: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: dev-aws.api.atoloan.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: atoloan-api
+                port:
+                  number: 80
