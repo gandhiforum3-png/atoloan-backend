@@ -28,7 +28,10 @@ class Settings(BaseSettings):
     pgpassword: str = ""
     pgdatabase: str = "atoloan"
 
-    # OpenAI
+    # Anthropic
+    anthropic_api_key: str = ""
+
+    # OpenAI (kept for backward-compat; no longer used by rate_sheet_parser)
     openai_api_key: str = ""
 
     # 700Credit

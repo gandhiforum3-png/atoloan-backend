@@ -27,6 +27,26 @@ spec:
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
+  name: atoloan-anthropic-secret
+  namespace: atoloan-backend-uat
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: secret-store
+    kind: ClusterSecretStore
+  target:
+    name: atoloan-anthropic-secret
+    creationPolicy: Owner
+  data:
+    - secretKey: ANTHROPIC_API_KEY
+      remoteRef:
+        key: atoloan/anthropic
+        property: ANTHROPIC_API_KEY
+
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
   name: atoloan-sevencredit-secret
   namespace: atoloan-backend-uat
 spec:
@@ -173,6 +193,12 @@ spec:
                 secretKeyRef:
                   name: atoloan-openai-secret
                   key: OPENAI_API_KEY
+            # Anthropic — from AWS Secrets Manager via ESO
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-anthropic-secret
+                  key: ANTHROPIC_API_KEY
             # SevenCredit — from AWS Secrets Manager via ESO
             - name: SEVENCREDIT_ACCOUNT
               valueFrom:
