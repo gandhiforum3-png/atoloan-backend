@@ -14,6 +14,8 @@ user_table = Table(
     Column("state", String(100)),
     Column("zipcode", String(20)),
     Column("phone_number", String(32)),
+    Column("drivers_license_key", String(1024)),
+    Column("paycheck_key", String(1024)),
     Column(
         "last_modified_at",
         DateTime(timezone=True),

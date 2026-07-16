@@ -55,32 +55,32 @@ MOCK_LOAN_PROGRAMS = [
 
 TEST_SCENARIOS = [
     {
-        "name": "LA – Excellent Credit – High Down Payment",
-        "zipcode": "90210", "down_payment": 25000, "credit_score": 750,
+        "name": "LA – Excellent Credit – High Loan Amount",
+        "zipcode": "90210", "loan_amount": 25000, "credit_score": 750,
         "expected_eligible_bank_ids": [1, 2, 3, 5],
         "expected_best_bank_id": 1, "expected_rate": "3.99%",
     },
     {
-        "name": "NY – Excellent Credit – Medium Down Payment",
-        "zipcode": "10001", "down_payment": 20000, "credit_score": 740,
+        "name": "NY – Excellent Credit – Medium Loan Amount",
+        "zipcode": "10001", "loan_amount": 20000, "credit_score": 740,
         "expected_eligible_bank_ids": [1, 3, 4, 5],
         "expected_best_bank_id": 4, "expected_rate": "3.75%",
     },
     {
-        "name": "Chicago – Good Credit – Medium Down Payment",
-        "zipcode": "60601", "down_payment": 18000, "credit_score": 690,
+        "name": "Chicago – Good Credit – Medium Loan Amount",
+        "zipcode": "60601", "loan_amount": 18000, "credit_score": 690,
         "expected_eligible_bank_ids": [1, 3, 5],
         "expected_best_bank_id": 1, "expected_rate": "5.49%",
     },
     {
-        "name": "LA – Excellent Credit – Low Down Payment ($8 k)",
-        "zipcode": "90210", "down_payment": 8000, "credit_score": 760,
+        "name": "LA – Excellent Credit – Low Loan Amount ($8 k)",
+        "zipcode": "90210", "loan_amount": 8000, "credit_score": 760,
         "expected_eligible_bank_ids": [1, 3, 5],
         "expected_best_bank_id": 1, "expected_rate": "3.99%",
     },
     {
-        "name": "Miami – Excellent Credit – High Down Payment",
-        "zipcode": "33101", "down_payment": 30000, "credit_score": 780,
+        "name": "Miami – Excellent Credit – High Loan Amount",
+        "zipcode": "33101", "loan_amount": 30000, "credit_score": 780,
         "expected_eligible_bank_ids": [1, 3, 5],
         "expected_best_bank_id": 1, "expected_rate": "3.99%",
     },
@@ -98,7 +98,7 @@ def test_mock_data_structure():
 
 def test_scenarios_documented():
     """Confirm all test scenarios have required keys."""
-    required = {"name", "zipcode", "down_payment", "credit_score", "expected_best_bank_id", "expected_rate"}
+    required = {"name", "zipcode", "loan_amount", "credit_score", "expected_best_bank_id", "expected_rate"}
     for scenario in TEST_SCENARIOS:
         missing = required - scenario.keys()
         assert not missing, f"Scenario '{scenario['name']}' missing keys: {missing}"

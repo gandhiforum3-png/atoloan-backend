@@ -1,4 +1,6 @@
+import json
 import os
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -6,6 +8,15 @@ from fastapi.testclient import TestClient
 
 import app.main as main
 from app.models.prequal_result import PrequalResult
+
+# Load .env so real SEVENCREDIT_* values are available when this file is run
+# on its own (e.g. `pytest tests/test_findback.py`), matching the pattern in
+# tests/integration/conftest.py — otherwise test_findback_integration silently
+# skips instead of actually running.
+_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+if _ENV_FILE.exists():
+    from dotenv import load_dotenv
+    load_dotenv(_ENV_FILE, override=False)
 
 
 async def _noop() -> None:
@@ -99,7 +110,8 @@ def test_findback_missing_credentials(monkeypatch) -> None:
     not os.getenv("SEVENCREDIT_ACCOUNT") or not os.getenv("SEVENCREDIT_PASSWORD"),
     reason="Missing 700Credit credentials",
 )
-def test_findback_integration(monkeypatch) -> None:
+def test_findback_integration(monkeypatch, caplog) -> None:
+    caplog.set_level("INFO")
     _disable_db_checks(monkeypatch)
     client = _client()
     payload = {
@@ -121,9 +133,31 @@ def test_findback_integration(monkeypatch) -> None:
 
     resp = client.post("/findback", json=payload)
 
-    print("findback integration response:", _human_readable(resp.json()))
+    print(f"\n{'=' * 70}")
+    print(f"findback integration — HTTP status: {resp.status_code}")
+    print(f"findback integration — response headers: {dict(resp.headers)}")
+
+    body = resp.json()
+    print(f"findback integration — full response body:\n{json.dumps(body, indent=2)}")
+
+    prequal = body.get("prequal") or {}
+    raw_xml = prequal.get("raw_xml")
+    if raw_xml:
+        print(f"findback integration — raw 700Credit XML:\n{raw_xml}")
+
+    if resp.status_code != 200:
+        print(f"findback integration — error detail: {body.get('detail')}")
+        # The router swallows the real 700Credit error body into a generic
+        # 502 — pull the actual XML response back out of the logs it was
+        # captured into (app.integrations.seven_hundred logs it on failure).
+        for record in caplog.records:
+            if record.name == "app.integrations.seven_hundred":
+                print(f"findback integration — actual 700Credit gateway response:\n{record.getMessage()}")
+    print(f"{'=' * 70}\n")
+
+    print("findback integration response:", _human_readable(body))
     assert resp.status_code == 200
-    assert "prequal" in resp.json()
+    assert "prequal" in body
 
 
 def _human_readable(body: dict) -> str:

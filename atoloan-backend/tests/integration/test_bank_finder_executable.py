@@ -142,7 +142,7 @@ async def test_chicago_good_credit(db_conn):
 
 
 @pytest.mark.asyncio(loop_scope="module")
-async def test_la_low_down_payment(db_conn):
+async def test_la_low_loan_amount(db_conn):
     # CA Local CU requires min $10k; National CU accepts $5k+
     result = await _find(db_conn, "90210", 8000, 760)
     assert result is not None
@@ -150,10 +150,37 @@ async def test_la_low_down_payment(db_conn):
     assert result["interest_rate"] == "3.99%"
 
 
+@pytest.mark.asyncio(loop_scope="module")
+async def test_unrecognized_zipcode_still_finds_nationwide_bank(db_conn):
+    """
+    Regression test: a zip code not in our zipcode table used to abort the
+    whole search immediately, even though nationwide-eligible banks (no
+    county restriction) don't actually need to know the county. "77002"
+    (Houston, TX) is deliberately not in MOCK_ZIPCODES.
+    """
+    result = await _find(db_conn, "77002", 25000, 750)
+    assert result is not None
+    # Only National Credit Union (nationwide) and No Restrictions CU (no
+    # region list) are eligible without a known county — National wins on rate.
+    assert result["bank_name"] == "National Credit Union"
+    assert result["interest_rate"] == "3.99%"
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_unrecognized_zipcode_excludes_county_restricted_banks(db_conn):
+    """A bank restricted to a specific county must NOT match when we can't
+    determine the user's county — there's nothing to compare against."""
+    from app.services.bank_finder import find_best_bank
+
+    result = await find_best_bank(db_conn, zipcode="77002", loan_amount=25000, credit_score=750)
+    assert result is not None
+    assert result["bank_name"] != "New York Only CU"
+
+
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
 
-async def _find(conn, zipcode, down_payment, credit_score):
+async def _find(conn, zipcode, loan_amount, credit_score):
     from app.services.bank_finder import find_best_bank
-    return await find_best_bank(conn, zipcode=zipcode, down_payment=down_payment, credit_score=credit_score)
+    return await find_best_bank(conn, zipcode=zipcode, loan_amount=loan_amount, credit_score=credit_score)

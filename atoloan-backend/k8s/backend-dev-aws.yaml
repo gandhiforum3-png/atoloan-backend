@@ -114,6 +114,8 @@ data:
   PGDATABASE: "atoloandb"
   SEVENCREDIT_ENV: "test"
   CORS_ORIGINS: "http://dev-aws.atoloan.com,https://dev-aws.atoloan.com"
+  AWS_REGION: "us-east-2"
+  S3_BUCKET_NAME: "atoloan-user-documents-dev"
 
 ---
 # ─────────────────────────────────────────────────────────────────────────────

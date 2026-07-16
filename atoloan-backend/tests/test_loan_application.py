@@ -251,10 +251,10 @@ class TestFindbackRouterFields:
             type("F", (), {"__init__": lambda s, **kw: None, "send_prequalify": DummyClient().send_prequalify}),
         )
 
-    def _mock_bank_finder(self, monkeypatch, offer: dict | None = None) -> None:
-        async def _finder(*_, **__):
-            return offer
-        monkeypatch.setattr("app.api.routers.findback.find_best_bank", _finder)
+    def _mock_bank_finder(self, monkeypatch, offer: dict | None = None) -> AsyncMock:
+        mock = AsyncMock(return_value=offer)
+        monkeypatch.setattr("app.api.routers.findback.find_best_bank", mock)
+        return mock
 
     def _mock_engine(self, monkeypatch) -> None:
         """Make get_engine().begin() a no-op async context manager."""
@@ -375,7 +375,11 @@ class TestFindbackRouterFields:
         self._mock_engine(monkeypatch)
         save_mock = self._mock_save(monkeypatch)
 
-        _client().post("/findback", json=FLAT_PAYLOAD)
+        # A vehicle price is required so a loan_amount can be computed —
+        # bank finder is skipped entirely without one (see
+        # test_bank_finder_skipped_when_vehicle_price_missing).
+        payload = {**FLAT_PAYLOAD, "answers": {"vehicle-price": "30000"}}
+        _client().post("/findback", json=payload)
 
         kwargs = save_mock.call_args.kwargs
         assert kwargs["best_bank"] == bank_offer
@@ -419,3 +423,43 @@ class TestFindbackRouterFields:
 
         kwargs = save_mock.call_args.kwargs
         assert kwargs["down_payment"] == 5000.0
+
+    def test_bank_finder_receives_loan_amount_not_down_payment(self, monkeypatch) -> None:
+        """
+        Regression test: find_best_bank() must be called with the amount to be
+        financed (vehicle_price - down_payment), not the raw down payment.
+        Passing the raw down payment causes it to be compared against each
+        loan program's min/max_loan_amount, which almost never matches since
+        a typical down payment ($1k-$5k) is far below a typical loan tier
+        minimum ($10k+) — this was a real production bug (findback returned
+        no eligible bank for essentially every real down payment amount).
+        """
+        _disable_db_checks(monkeypatch)
+        self._mock_prequal(monkeypatch)
+        finder_mock = self._mock_bank_finder(monkeypatch, offer=None)
+        self._mock_engine(monkeypatch)
+        self._mock_save(monkeypatch)
+
+        payload = {
+            **{k: v for k, v in FLAT_PAYLOAD.items() if k != "otherDownPayment"},
+            "answers": {"vehicle-price": "22400", "down-payment": "4600"},
+        }
+        _client().post("/findback", json=payload)
+
+        finder_mock.assert_awaited_once()
+        kwargs = finder_mock.call_args.kwargs
+        assert "down_payment" not in kwargs
+        assert kwargs["loan_amount"] == 22400.0 - 4600.0
+
+    def test_bank_finder_skipped_when_vehicle_price_missing(self, monkeypatch) -> None:
+        """Without a vehicle price there's no way to compute a loan amount,
+        so bank finder should be skipped entirely rather than guessing."""
+        _disable_db_checks(monkeypatch)
+        self._mock_prequal(monkeypatch)
+        finder_mock = self._mock_bank_finder(monkeypatch, offer=None)
+        self._mock_engine(monkeypatch)
+        self._mock_save(monkeypatch)
+
+        _client().post("/findback", json=FLAT_PAYLOAD)  # otherDownPayment=5000, no vehicle-price
+
+        finder_mock.assert_not_awaited()

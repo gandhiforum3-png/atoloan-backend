@@ -88,7 +88,9 @@ metadata:
 data:
   APP_ENV: "uat"
   SEVENCREDIT_ENV: "test"
-  CORS_ORIGINS: "http://uat.atoloan.com"
+  CORS_ORIGINS: "http://uat.atoloan.com,https://uat.atoloan.com"
+  AWS_REGION: "us-east-2"
+  S3_BUCKET_NAME: "atoloan-user-documents-uat"
 
 ---
 # ─────────────────────────────────────────────────────────────────────────────

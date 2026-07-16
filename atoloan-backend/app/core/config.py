@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     sevencredit_client_id: str = ""
     sevencredit_client_secret: str = ""
 
+    # AWS / S3 (user-uploaded documents)
+    aws_region: str = "us-east-2"
+    s3_bucket_name: str = ""
+
     # CORS allowed origins (comma-separated)
     # Set via CORS_ORIGINS env var (ConfigMap) or .env for local dev
     cors_origins: str = "http://localhost:5173,http://localhost:5174"

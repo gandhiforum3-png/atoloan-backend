@@ -125,8 +125,10 @@ metadata:
   namespace: atoloan-backend-prod
 data:
   APP_ENV: "prod"
-  SEVENCREDIT_ENV: "prod"
+  SEVENCREDIT_ENV: "test"
   CORS_ORIGINS: "https://atoloans.com,https://www.atoloans.com"
+  AWS_REGION: "us-east-2"
+  S3_BUCKET_NAME: "atoloan-user-documents-prod"
 
 ---
 # ─────────────────────────────────────────────────────────────────────────────
