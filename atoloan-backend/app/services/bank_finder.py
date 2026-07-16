@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 async def find_best_bank(
     conn: AsyncConnection,
     zipcode: str,
-    down_payment: float,
+    loan_amount: float,
     credit_score: int
 ) -> Optional[dict]:
     """
@@ -20,7 +20,8 @@ async def find_best_bank(
     Args:
         conn: Database connection
         zipcode: User's zipcode
-        down_payment: User's down payment amount
+        loan_amount: The amount to be financed (NOT the down payment) —
+            compared against each loan program tier's min/max_loan_amount.
         credit_score: User's credit score
 
     Returns:
@@ -36,15 +37,21 @@ async def find_best_bank(
             "max_loan_amount": int
         }
     """
-    logging.info(f"[BANK FINDER] Starting search for zipcode={zipcode}, down_payment={down_payment}, credit_score={credit_score}")
+    logging.info(f"[BANK FINDER] Starting search for zipcode={zipcode}, loan_amount={loan_amount}, credit_score={credit_score}")
 
-    # Step 1: Get user's county from zipcode
+    # Step 1: Get user's county from zipcode (best-effort). An unknown/
+    # unsupported zip code doesn't block the search — it just means we can't
+    # match county-restricted banks. Banks with no region restriction (e.g.
+    # accept_out_region_loans=true or out_region_list IS NULL) are still
+    # eligible everywhere and get checked in step 2 regardless.
     user_county = await _get_county_from_zipcode(conn, zipcode)
-    if not user_county:
-        logging.warning(f"[BANK FINDER] Zipcode {zipcode} not found in database")
-        return None
-
-    logging.info(f"[BANK FINDER] User location: zipcode={zipcode}, county={user_county}")
+    if user_county:
+        logging.info(f"[BANK FINDER] User location: zipcode={zipcode}, county={user_county}")
+    else:
+        logging.warning(
+            f"[BANK FINDER] Zipcode {zipcode} not found in database — "
+            "only nationwide-eligible banks will be considered"
+        )
 
     # Step 2: Find all eligible banks for this location
     eligible_banks = await _get_eligible_banks(conn, zipcode, user_county)
@@ -58,7 +65,7 @@ async def find_best_bank(
     best_offer = await _find_best_rate(
         conn,
         eligible_banks,
-        down_payment,
+        loan_amount,
         credit_score
     )
 
@@ -70,7 +77,7 @@ async def find_best_bank(
             f"tier={best_offer['tier_name']})"
         )
     else:
-        logging.warning(f"[BANK FINDER] No suitable offers found for credit_score={credit_score}, down_payment={down_payment}")
+        logging.warning(f"[BANK FINDER] No suitable offers found for credit_score={credit_score}, loan_amount={loan_amount}")
 
     return best_offer
 
@@ -99,7 +106,7 @@ async def _get_county_from_zipcode(conn: AsyncConnection, zipcode: str) -> Optio
 async def _get_eligible_banks(
     conn: AsyncConnection,
     zipcode: str,
-    user_county: str
+    user_county: Optional[str]
 ) -> list[dict]:
     """
     Get all banks eligible to provide loans in the user's location.
@@ -109,10 +116,15 @@ async def _get_eligible_banks(
     2. accept_out_region_loans is False/NULL but out_region_list is empty/NULL (eligible for entire USA), OR
     3. User's county is in the bank's out_region_list
 
+    user_county may be None (zip code not found in our zipcode table) — in
+    that case only banks matching (1) or (2) above can match, since (3)
+    can't be evaluated without a known county. This lets nationwide banks
+    still be found even for zip codes we don't have county data for.
+
     Args:
         conn: Database connection
         zipcode: User's zipcode
-        user_county: User's county name
+        user_county: User's county name, or None if unresolved
 
     Returns:
         List of eligible bank records
@@ -154,7 +166,7 @@ async def _get_eligible_banks(
 async def _find_best_rate(
     conn: AsyncConnection,
     eligible_banks: list[dict],
-    down_payment: float,
+    loan_amount: float,
     credit_score: int
 ) -> Optional[dict]:
     """
@@ -163,7 +175,7 @@ async def _find_best_rate(
     Args:
         conn: Database connection
         eligible_banks: List of eligible bank records
-        down_payment: User's down payment amount
+        loan_amount: The amount to be financed
         credit_score: User's credit score
 
     Returns:
@@ -193,8 +205,8 @@ async def _find_best_rate(
                 AND item_type = 'term'
                 AND min_credit_score <= :credit_score
                 AND max_credit_score >= :credit_score
-                AND (min_loan_amount IS NULL OR min_loan_amount <= :down_payment)
-                AND (max_loan_amount IS NULL OR max_loan_amount >= :down_payment)
+                AND (min_loan_amount IS NULL OR min_loan_amount <= :loan_amount)
+                AND (max_loan_amount IS NULL OR max_loan_amount >= :loan_amount)
                 AND rate IS NOT NULL
             ORDER BY rate ASC
             LIMIT 1
@@ -203,7 +215,7 @@ async def _find_best_rate(
         result = await conn.execute(query, {
             "bank_id": bank_id,
             "credit_score": credit_score,
-            "down_payment": down_payment
+            "loan_amount": loan_amount
         })
 
         row = result.fetchone()

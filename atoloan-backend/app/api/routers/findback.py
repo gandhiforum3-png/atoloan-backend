@@ -93,17 +93,25 @@ async def findback(request: Request) -> dict:
 
     # --- Bank Finder (best-effort, does not fail the request if unavailable) ---
     down_payment = _resolve_down_payment(original_payload)
+    vehicle_price = _resolve_vehicle_price(original_payload)
     credit_score = 740  # placeholder until 700Credit returns an actual score
     zipcode = payload.get("zip_code")
 
+    # loan_amount is what actually gets financed — vehicle price minus down
+    # payment — NOT the down payment itself. Loan program tiers (min/max
+    # loan amount) are matched against this, not against down_payment.
+    loan_amount = None
+    if vehicle_price and vehicle_price > (down_payment or 0):
+        loan_amount = vehicle_price - (down_payment or 0)
+
     best_offer = None
-    if down_payment and credit_score and zipcode:
+    if loan_amount and credit_score and zipcode:
         try:
             async with get_engine().begin() as conn:
                 best_offer = await find_best_bank(
                     conn,
                     zipcode=str(zipcode),
-                    down_payment=float(down_payment),
+                    loan_amount=float(loan_amount),
                     credit_score=int(credit_score),
                 )
             if best_offer:
@@ -118,7 +126,7 @@ async def findback(request: Request) -> dict:
             logger.exception("Bank finder failed — skipping")
     else:
         missing_params = [
-            p for p, v in [("down_payment", down_payment), ("credit_score", credit_score), ("zipcode", zipcode)]
+            p for p, v in [("loan_amount", loan_amount), ("credit_score", credit_score), ("zipcode", zipcode)]
             if not v
         ]
         logger.warning("Bank finder skipped — missing: %s", ", ".join(missing_params))
@@ -191,5 +199,22 @@ def _resolve_down_payment(original_payload: dict) -> float | None:
             return float(s)
         except (ValueError, IndexError):
             logger.warning("Could not parse down-payment range: %s", dp_range)
+
+    return None
+
+
+def _resolve_vehicle_price(original_payload: dict) -> float | None:
+    """Extract a numeric vehicle price from the raw request payload."""
+    answers = original_payload.get("answers", {})
+    price = answers.get("vehicle-price")
+    if price:
+        try:
+            s = str(price)
+            if "-" in s:
+                lo, hi = s.split("-", 1)
+                return (float(lo.strip()) + float(hi.strip())) / 2
+            return float(s)
+        except (ValueError, IndexError):
+            logger.warning("Could not parse vehicle-price: %s", price)
 
     return None

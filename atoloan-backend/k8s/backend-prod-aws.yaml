@@ -64,6 +64,26 @@ spec:
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
+  name: atoloan-anthropic-secret
+  namespace: atoloan-backend-prod
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: secret-store
+    kind: ClusterSecretStore
+  target:
+    name: atoloan-anthropic-secret
+    creationPolicy: Owner
+  data:
+    - secretKey: ANTHROPIC_API_KEY
+      remoteRef:
+        key: atoloan/anthropic
+        property: ANTHROPIC_API_KEY
+
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
   name: atoloan-sevencredit-secret
   namespace: atoloan-backend-prod
 spec:
@@ -105,8 +125,10 @@ metadata:
   namespace: atoloan-backend-prod
 data:
   APP_ENV: "prod"
-  SEVENCREDIT_ENV: "prod"
+  SEVENCREDIT_ENV: "test"
   CORS_ORIGINS: "https://atoloans.com,https://www.atoloans.com"
+  AWS_REGION: "us-east-2"
+  S3_BUCKET_NAME: "atoloan-user-documents-prod"
 
 ---
 # ─────────────────────────────────────────────────────────────────────────────
@@ -256,6 +278,11 @@ spec:
                 secretKeyRef:
                   name: atoloan-openai-secret
                   key: OPENAI_API_KEY
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: atoloan-anthropic-secret
+                  key: ANTHROPIC_API_KEY
             - name: SEVENCREDIT_ACCOUNT
               valueFrom:
                 secretKeyRef:

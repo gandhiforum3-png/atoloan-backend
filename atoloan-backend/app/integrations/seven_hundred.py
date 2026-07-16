@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -9,6 +10,8 @@ import xml.etree.ElementTree as ET
 import requests
 
 from app.models.prequal_result import PrequalResult
+
+logger = logging.getLogger(__name__)
 
 
 class SevenHundredCreditClient:
@@ -91,7 +94,16 @@ class SevenHundredCreditClient:
         if extra_fields:
             data.update(extra_fields)
 
-        resp = requests.post(self.request_url, data=data, timeout=self.timeout)
+        headers = {}
+        if self.client_id and self.client_secret:
+            headers["Authorization"] = f"Bearer {self._get_access_token()}"
+
+        resp = requests.post(self.request_url, data=data, headers=headers, timeout=self.timeout)
+        if not resp.ok:
+            logger.error(
+                "700Credit prequalify request failed: status=%s account_set=%s password_set=%s body=%s",
+                resp.status_code, bool(self.account), bool(self.password), resp.text[:1000],
+            )
         resp.raise_for_status()
         return self._parse_prequal_response(resp.text)
 
@@ -133,6 +145,11 @@ class SevenHundredCreditClient:
         token_url = f"{self.base_url}/.auth/token"
         payload = {"ClientId": self.client_id, "ClientSecret": self.client_secret}
         res = requests.post(token_url, json=payload, timeout=self.timeout)
+        if not res.ok:
+            logger.error(
+                "700Credit token request failed: status=%s client_id_set=%s client_secret_set=%s body=%s",
+                res.status_code, bool(self.client_id), bool(self.client_secret), res.text[:1000],
+            )
         res.raise_for_status()
         data = res.json()
 

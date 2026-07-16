@@ -9,7 +9,7 @@ import logging
 from typing import List, Optional
 from datetime import date
 
-from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 
@@ -34,38 +34,22 @@ logger = logging.getLogger(__name__)
 # HELPER: BASE LLM FACTORY
 # ---------------------------------------------------------
 
-def make_llm() -> ChatOpenAI:
+def make_llm() -> ChatAnthropic:
     """
-    Create a base ChatOpenAI instance.
-    Reads OPENAI_API_KEY from environment variables.
-    
-    Environment Variables:
-        OPENAI_API_KEY: OpenAI API key (required)
-    
-    Returns:
-        ChatOpenAI: Configured LLM instance
-        
-    Raises:
-        ValueError: If OPENAI_API_KEY is not set
+    Create a base ChatAnthropic instance.
+    Reads ANTHROPIC_API_KEY from environment variables.
     """
-    api_key = get_settings().openai_api_key
+    api_key = get_settings().anthropic_api_key
 
     if not api_key:
         raise ValueError(
-            "OPENAI_API_KEY is not set. "
-            "Please add it to your .env file: OPENAI_API_KEY=sk-..."
+            "ANTHROPIC_API_KEY is not set. "
+            "Please add it to your .env file: ANTHROPIC_API_KEY=sk-ant-..."
         )
 
-    if not api_key.startswith("sk-"):
-        logger.warning(
-            "OPENAI_API_KEY does not start with 'sk-'. "
-            "This may not be a valid OpenAI key format."
-        )
-    
-    return ChatOpenAI(
+    return ChatAnthropic(
         api_key=api_key,
-        model="gpt-4o-mini",
-        temperature=0.1,
+        model="claude-opus-4-8",
         max_tokens=4096,
     )
 
@@ -74,7 +58,7 @@ def make_llm() -> ChatOpenAI:
 # SECTION-SPECIFIC EXTRACTORS (STRUCTURED)
 # ---------------------------------------------------------
 
-def extract_credit_union_info(text: str, llm: ChatOpenAI) -> Optional[CreditUnionInfo]:
+def extract_credit_union_info(text: str, llm: ChatAnthropic) -> Optional[CreditUnionInfo]:
     """Extract general credit union information from markdown text."""
     prompt = PromptTemplate(
         template="""
@@ -117,7 +101,7 @@ TEXT:
         return None
 
 
-def extract_rate_policy(text: str, llm: ChatOpenAI) -> Optional[RatePolicy]:
+def extract_rate_policy(text: str, llm: ChatAnthropic) -> Optional[RatePolicy]:
     """Extract rate policy information from markdown text."""
     prompt = PromptTemplate(
         template="""
@@ -155,7 +139,7 @@ TEXT:
         return None
 
 
-def extract_guidelines(text: str, llm: ChatOpenAI) -> Optional[Guidelines]:
+def extract_guidelines(text: str, llm: ChatAnthropic) -> Optional[Guidelines]:
     """Extract underwriting guidelines from markdown text."""
     prompt = PromptTemplate(
         template="""
@@ -192,7 +176,7 @@ TEXT:
         return None
 
 
-def extract_special_programs(text: str, llm: ChatOpenAI) -> Optional[SpecialPrograms]:
+def extract_special_programs(text: str, llm: ChatAnthropic) -> Optional[SpecialPrograms]:
     """Extract special loan programs from markdown text."""
     prompt = PromptTemplate(
         template="""
@@ -230,7 +214,7 @@ TEXT:
         return None
 
 
-def extract_participation_and_funding(text: str, llm: ChatOpenAI) -> Optional[ParticipationAndFunding]:
+def extract_participation_and_funding(text: str, llm: ChatAnthropic) -> Optional[ParticipationAndFunding]:
     """Extract participation and funding information from markdown text."""
     prompt = PromptTemplate(
         template="""
@@ -271,7 +255,7 @@ TEXT:
         return None
 
 
-def extract_additional_details(text: str, llm: ChatOpenAI) -> Optional[AdditionalDetails]:
+def extract_additional_details(text: str, llm: ChatAnthropic) -> Optional[AdditionalDetails]:
     """Extract disclaimers and additional details from markdown text."""
     prompt = PromptTemplate(
         template="""
@@ -323,7 +307,7 @@ class LoanProgramCatalog(BaseModel):
     programs: List[LoanProgramStub]
 
 
-def discover_loan_programs(text: str, llm: ChatOpenAI) -> List[LoanProgramStub]:
+def discover_loan_programs(text: str, llm: ChatAnthropic) -> List[LoanProgramStub]:
     """
     First pass: identify all distinct loan program groups without extracting full tables.
     """
@@ -370,7 +354,7 @@ TEXT:
 
 def extract_single_loan_program(
     text: str,
-    llm: ChatOpenAI,
+    llm: ChatAnthropic,
     stub: LoanProgramStub,
     current_year: int = 2025,
 ) -> Optional[LoanProgram]:
@@ -448,7 +432,7 @@ TEXT:
         return None
 
 
-def extract_all_loan_programs(text: str, llm: ChatOpenAI, current_year: int = 2025) -> List[LoanProgram]:
+def extract_all_loan_programs(text: str, llm: ChatAnthropic, current_year: int = 2025) -> List[LoanProgram]:
     """
     Orchestrates discovery + per-program extraction.
     """
@@ -472,13 +456,6 @@ def parse_rate_sheet_from_markdown(text: str, current_year: int = 2025) -> Optio
     """
     Main entry point: runs the multi-step hybrid agent
     and returns a fully populated CreditUnionRateSheet.
-    
-    Args:
-        text: Markdown text from the rate sheet
-        current_year: Year to use for calculating model years from age ranges
-        
-    Returns:
-        CreditUnionRateSheet object or None if parsing fails
     """
     if not text or not isinstance(text, str) or not text.strip():
         logger.error("Invalid input: text must be a non-empty string")
@@ -487,7 +464,6 @@ def parse_rate_sheet_from_markdown(text: str, current_year: int = 2025) -> Optio
     try:
         llm = make_llm()
 
-        # Step 1: top-level sections
         logger.info("Extracting credit union info...")
         credit_union_info = extract_credit_union_info(text, llm)
 
@@ -506,11 +482,9 @@ def parse_rate_sheet_from_markdown(text: str, current_year: int = 2025) -> Optio
         logger.info("Extracting additional details...")
         additional_details = extract_additional_details(text, llm)
 
-        # Step 2: loan programs (multi-step: discover → per-program)
         logger.info("Discovering and extracting loan programs...")
         loan_programs = extract_all_loan_programs(text, llm, current_year=current_year)
 
-        # Step 3: assemble final object
         rate_sheet = CreditUnionRateSheet(
             credit_union_info=credit_union_info,
             rate_policy=rate_policy,

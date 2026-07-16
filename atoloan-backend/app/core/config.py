@@ -28,7 +28,10 @@ class Settings(BaseSettings):
     pgpassword: str = ""
     pgdatabase: str = "atoloan"
 
-    # OpenAI
+    # Anthropic
+    anthropic_api_key: str = ""
+
+    # OpenAI (kept for backward-compat; no longer used by rate_sheet_parser)
     openai_api_key: str = ""
 
     # 700Credit
@@ -37,6 +40,10 @@ class Settings(BaseSettings):
     sevencredit_password: str = ""
     sevencredit_client_id: str = ""
     sevencredit_client_secret: str = ""
+
+    # AWS / S3 (user-uploaded documents)
+    aws_region: str = "us-east-2"
+    s3_bucket_name: str = ""
 
     # CORS allowed origins (comma-separated)
     # Set via CORS_ORIGINS env var (ConfigMap) or .env for local dev
