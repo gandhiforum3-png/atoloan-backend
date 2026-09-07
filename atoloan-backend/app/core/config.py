@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     aws_region: str = "us-east-2"
     s3_bucket_name: str = ""
 
+    # AWS SES (applicant summary email)
+    ses_sender_email: str = "no-reply@atoloan.com"
+
+    # Dealer Hub (dealer -> bank network lookup for /findback)
+    dealer_hub_base_url: str = "http://localhost:8000"
+
     # CORS allowed origins (comma-separated)
     # Set via CORS_ORIGINS env var (ConfigMap) or .env for local dev
     cors_origins: str = "http://localhost:5173,http://localhost:5174"

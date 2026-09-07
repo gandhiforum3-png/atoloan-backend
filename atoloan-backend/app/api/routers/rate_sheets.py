@@ -3,8 +3,11 @@ Rate sheet upload and parsing endpoints.
 """
 import asyncio
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -21,6 +24,21 @@ router = APIRouter(tags=["rate-sheets"])
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="parser_")
 
 UPLOAD_DIR = Path("upload_pdf")
+
+
+def _name_from_filename(filename: str) -> Optional[str]:
+    """
+    Last-resort fallback when the LLM extraction (including its own
+    retry) still can't find an institution name. Rate sheet filenames in
+    this domain routinely encode the credit union's name (e.g.
+    "SF FIRE CU.pdf"), so strip the extension/date-ish noise and title-case
+    what's left as a best-effort guess.
+    """
+    stem = Path(filename).stem
+    # Drop leading upload-style timestamps like "20260603_232923_"
+    stem = re.sub(r"^\d{6,}[_-]\d{4,}[_-]?", "", stem)
+    stem = re.sub(r"[_\-]+", " ", stem).strip()
+    return stem or None
 
 
 def _parse_rate_sheet_sync(markdown_content: str) -> dict | None:
@@ -99,6 +117,19 @@ async def ratesheetuploader(request: Request) -> dict:
                             parsed["rate_sheet_parsed"] = rate_sheet_dict
                             rate_sheet_data = rate_sheet_dict
                             logger.info("Successfully parsed rate sheet from %s", filename)
+
+                            credit_union_info = rate_sheet_data.setdefault("credit_union_info", {}) or {}
+                            rate_sheet_data["credit_union_info"] = credit_union_info
+                            if not (credit_union_info.get("name") or "").strip():
+                                inferred_name = _name_from_filename(filename)
+                                if inferred_name:
+                                    logger.warning(
+                                        "No name extracted for %s even after LLM fallback — "
+                                        "using filename-derived name %r; flag for review",
+                                        filename, inferred_name,
+                                    )
+                                    credit_union_info["name"] = inferred_name
+                                    credit_union_info["name_inferred_from_filename"] = True
                         else:
                             logger.warning("Rate sheet parser returned None for %s", filename)
                     except Exception:
@@ -140,7 +171,8 @@ async def parse_rate_sheet_markdown(request: Request) -> dict:
     """
     Parse raw markdown text and return a structured CreditUnionRateSheet.
 
-    Payload: { "markdown_text": "...", "current_year": 2026 }
+    Payload: { "markdown_text": "...", "current_year": 2026 } — current_year is optional and
+    defaults to the current calendar year if omitted.
     """
     try:
         payload = await request.json()
@@ -154,7 +186,7 @@ async def parse_rate_sheet_markdown(request: Request) -> dict:
             detail="markdown_text is required and must be a non-empty string",
         )
 
-    current_year = payload.get("current_year", 2026)
+    current_year = payload.get("current_year") or date.today().year
     if not isinstance(current_year, int) or not (1900 <= current_year <= 2100):
         raise HTTPException(
             status_code=400,

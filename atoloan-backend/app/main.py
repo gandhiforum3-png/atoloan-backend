@@ -17,6 +17,7 @@ from app.api.routers.credit_unions import update_router
 from app.api.routers.documents import router as documents_router
 from app.api.routers.findback import router as findback_router
 from app.api.routers.health import router as health_router
+from app.api.routers.loan_applications import router as loan_applications_router
 from app.api.routers.rate_sheets import router as rate_sheets_router
 from app.api.routers.users import router as users_router
 
@@ -54,3 +55,4 @@ app.include_router(rate_sheets_router)
 app.include_router(findback_router)
 app.include_router(users_router)
 app.include_router(documents_router)
+app.include_router(loan_applications_router)

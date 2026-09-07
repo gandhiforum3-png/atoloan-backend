@@ -168,6 +168,39 @@ _ALTER_STATEMENTS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS zipcode VARCHAR(20)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS drivers_license_key VARCHAR(1024)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS paycheck_key VARCHAR(1024)",
+    # Rate sheet schema optimization (docs/rate_sheet_schema_optimization.md), Phase 1 (#1-#4):
+    # numeric fields derived alongside the existing free-text ones so matching/ranking
+    # doesn't have to re-parse strings at query time. NULL on rows ingested before this
+    # migration until that bank's rate sheet is re-uploaded.
+    "ALTER TABLE bank_info ADD COLUMN IF NOT EXISTS maximum_debt_to_income_ratio_value NUMERIC",
+    "ALTER TABLE loan_program_items ADD COLUMN IF NOT EXISTS base_ltv_value NUMERIC",
+    "ALTER TABLE loan_program_items ADD COLUMN IF NOT EXISTS max_ltv_value NUMERIC",
+    "ALTER TABLE loan_program_items ADD COLUMN IF NOT EXISTS mileage_limit_value INTEGER",
+    "ALTER TABLE loan_program_items ADD COLUMN IF NOT EXISTS rate_value NUMERIC",
+    # Rate sheet schema optimization, Phase 2 (#6, #9, #10): constrained categorical fields
+    # (values are enforced at the Pydantic/LLM-extraction layer via Literal types, not a DB
+    # CHECK constraint, matching how item_type/value_type are already handled).
+    "ALTER TABLE bank_info ADD COLUMN IF NOT EXISTS credit_bureau TEXT",
+    "ALTER TABLE bank_info ADD COLUMN IF NOT EXISTS credit_score_model TEXT",
+    "ALTER TABLE rate_policy_items ADD COLUMN IF NOT EXISTS fee_category TEXT",
+    "ALTER TABLE loan_program_items ADD COLUMN IF NOT EXISTS tier_rank INTEGER",
+    # Rate sheet schema optimization, Phase 6 (#28, #30): condition classification for
+    # discounts/adjustments, and multi-path membership eligibility, so bank_finder can apply
+    # discounts and pre-filter by membership without re-parsing free text at query time.
+    "ALTER TABLE rate_policy_items ADD COLUMN IF NOT EXISTS condition_type TEXT",
+    "ALTER TABLE rate_policy_items ADD COLUMN IF NOT EXISTS threshold_value NUMERIC",
+    "ALTER TABLE bank_info ADD COLUMN IF NOT EXISTS membership_paths TEXT[]",
+    # Dealer-scoped soft pull: link an application to the dealer who ran it,
+    # and store every matched bank's own offer (not just the single best).
+    "ALTER TABLE loan_applications ADD COLUMN IF NOT EXISTS dealer_id VARCHAR(20)",
+    "ALTER TABLE loan_applications ADD COLUMN IF NOT EXISTS matched_banks JSONB",
+    # Deterministic per-email user_id (see loan_application_mutations.user_id_from_email) —
+    # a stable join key across users/loan_applications independent of raw email matching.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS user_id BIGINT",
+    # Postgres has no ADD CONSTRAINT IF NOT EXISTS for UNIQUE — a unique
+    # index is the idempotent equivalent.
+    "CREATE UNIQUE INDEX IF NOT EXISTS users_user_id_key ON users (user_id)",
+    "ALTER TABLE loan_applications ADD COLUMN IF NOT EXISTS user_id BIGINT",
 ]
 
 
@@ -198,7 +231,29 @@ async def run() -> None:
         # Step 4: seed zipcode table from CSV (ON CONFLICT DO NOTHING — idempotent)
         await _seed_zipcodes(conn)
 
+        # Step 5: backfill user_id for rows written before that column existed
+        await _backfill_user_ids(conn)
+
     logger.info("All migrations complete — 6 tables ready.")
+
+
+async def _backfill_user_ids(conn) -> None:
+    from app.services.loan_application_mutations import user_id_from_email  # noqa: PLC0415
+
+    result = await conn.execute(text("SELECT email FROM users WHERE user_id IS NULL"))
+    emails = [row[0] for row in result.fetchall()]
+    for email in emails:
+        uid = user_id_from_email(email)
+        await conn.execute(
+            text("UPDATE users SET user_id = :uid WHERE email = :email"),
+            {"uid": uid, "email": email},
+        )
+        await conn.execute(
+            text("UPDATE loan_applications SET user_id = :uid WHERE email = :email AND user_id IS NULL"),
+            {"uid": uid, "email": email},
+        )
+    if emails:
+        logger.info("Backfilled user_id for %d user(s)", len(emails))
 
 
 async def _seed_zipcodes(conn) -> None:

@@ -177,6 +177,53 @@ async def test_unrecognized_zipcode_excludes_county_restricted_banks(db_conn):
     assert result["bank_name"] != "New York Only CU"
 
 
+@pytest.mark.asyncio(loop_scope="module")
+async def test_matching_banks_returns_every_eligible_bank_ranked_by_rate(db_conn):
+    from app.services.bank_finder import find_matching_banks
+
+    results = await find_matching_banks(db_conn, zipcode="90210", loan_amount=25000, credit_score=750)
+
+    # This dev DB also has real (non-mock) banks and real seeded zip/county
+    # data from other test runs, so don't assert the exact full list or rely
+    # on county-restricted "California Local CU" (102, whose eligibility
+    # here depends on how the real zipcode table happens to name 90210's
+    # county) — just the three mock banks that are unambiguously nationwide
+    # regardless of seed data, which is what this test actually needs to
+    # verify: multiple ranked offers instead of just one.
+    nationwide_mock_ids = {101, 103, 105}  # National, No Restrictions, Empty List
+    mock_results = [r for r in results if r["bank_id"] in nationwide_mock_ids]
+
+    names_by_rate = [r["bank_name"] for r in mock_results]
+    assert names_by_rate == ["National Credit Union", "Empty List CU", "No Restrictions CU"]
+    assert all(
+        results[i]["effective_rate"] <= results[i + 1]["effective_rate"]
+        for i in range(len(results) - 1)
+    )
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_matching_banks_respects_dealer_network_filter(db_conn):
+    from app.services.bank_finder import find_matching_banks
+
+    results = await find_matching_banks(
+        db_conn, zipcode="90210", loan_amount=25000, credit_score=750, bank_ids=[103, 105]
+    )
+
+    assert {r["bank_id"] for r in results} == {103, 105}
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_matching_banks_empty_when_nothing_eligible(db_conn):
+    from app.services.bank_finder import find_matching_banks
+
+    # New York Only CU (104) isn't eligible in LA.
+    results = await find_matching_banks(
+        db_conn, zipcode="90210", loan_amount=25000, credit_score=750, bank_ids=[104]
+    )
+
+    assert results == []
+
+
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------

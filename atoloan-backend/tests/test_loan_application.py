@@ -241,10 +241,10 @@ class TestFindbackRouterFields:
         monkeypatch.setattr("app.api.routers.findback.save_findback_result", mock)
         return mock
 
-    def _mock_prequal(self, monkeypatch) -> None:
+    def _mock_prequal(self, monkeypatch, score: int = 740) -> None:
         class DummyClient:
             def send_prequalify(self, **_) -> PrequalResult:
-                return _dummy_prequal()
+                return _dummy_prequal(score=score)
 
         monkeypatch.setattr(
             "app.api.routers.findback.SevenHundredCreditClient",
@@ -252,8 +252,11 @@ class TestFindbackRouterFields:
         )
 
     def _mock_bank_finder(self, monkeypatch, offer: dict | None = None) -> AsyncMock:
-        mock = AsyncMock(return_value=offer)
-        monkeypatch.setattr("app.api.routers.findback.find_best_bank", mock)
+        """findback now calls find_matching_banks() and derives best_offer =
+        matched_banks[0] — wrap the single offer into that list shape so
+        existing call sites (`offer=...`) don't need to change."""
+        mock = AsyncMock(return_value=[offer] if offer else [])
+        monkeypatch.setattr("app.api.routers.findback.find_matching_banks", mock)
         return mock
 
     def _mock_engine(self, monkeypatch) -> None:
@@ -461,5 +464,183 @@ class TestFindbackRouterFields:
         self._mock_save(monkeypatch)
 
         _client().post("/findback", json=FLAT_PAYLOAD)  # otherDownPayment=5000, no vehicle-price
+
+        finder_mock.assert_not_awaited()
+
+    def test_bank_finder_receives_real_credit_score_not_hardcoded(self, monkeypatch) -> None:
+        """
+        Regression test: findback used to pass a hardcoded 740 to
+        find_best_bank() regardless of what 700Credit actually returned.
+        It must now use the real score from the prequal result.
+        """
+        _disable_db_checks(monkeypatch)
+        self._mock_prequal(monkeypatch, score=870)  # a real score that isn't 740
+        finder_mock = self._mock_bank_finder(monkeypatch, offer=None)
+        self._mock_engine(monkeypatch)
+        self._mock_save(monkeypatch)
+
+        payload = {**FLAT_PAYLOAD, "answers": {"vehicle-price": "30000"}}
+        _client().post("/findback", json=payload)
+
+        finder_mock.assert_awaited_once()
+        assert finder_mock.call_args.kwargs["credit_score"] == 870
+
+    def test_bank_finder_receives_vehicle_type_and_mileage(self, monkeypatch) -> None:
+        _disable_db_checks(monkeypatch)
+        self._mock_prequal(monkeypatch)
+        finder_mock = self._mock_bank_finder(monkeypatch, offer=None)
+        self._mock_engine(monkeypatch)
+        self._mock_save(monkeypatch)
+
+        payload = {
+            **FLAT_PAYLOAD,
+            "answers": {"vehicle-price": "30000", "vehicle-type": "Used", "vehicle-mileage": "42000"},
+        }
+        _client().post("/findback", json=payload)
+
+        finder_mock.assert_awaited_once()
+        kwargs = finder_mock.call_args.kwargs
+        assert kwargs["vehicle_type"] == "Used"
+        assert kwargs["vehicle_mileage"] == 42000
+
+    def test_bank_finder_gets_none_vehicle_type_when_omitted(self, monkeypatch) -> None:
+        """Vehicle type/mileage are optional — omitting them must not block
+        the bank finder call, just pass None through (no filtering)."""
+        _disable_db_checks(monkeypatch)
+        self._mock_prequal(monkeypatch)
+        finder_mock = self._mock_bank_finder(monkeypatch, offer=None)
+        self._mock_engine(monkeypatch)
+        self._mock_save(monkeypatch)
+
+        payload = {**FLAT_PAYLOAD, "answers": {"vehicle-price": "30000"}}
+        _client().post("/findback", json=payload)
+
+        finder_mock.assert_awaited_once()
+        kwargs = finder_mock.call_args.kwargs
+        assert kwargs["vehicle_type"] is None
+        assert kwargs["vehicle_mileage"] is None
+
+    def test_bank_finder_ignores_unrecognized_vehicle_type(self, monkeypatch) -> None:
+        """An unrecognized vehicle-type value must not be forwarded as a
+        literal — it can never match a loan_program_items.vehicle_type row,
+        which would silently exclude every program instead of matching all."""
+        _disable_db_checks(monkeypatch)
+        self._mock_prequal(monkeypatch)
+        finder_mock = self._mock_bank_finder(monkeypatch, offer=None)
+        self._mock_engine(monkeypatch)
+        self._mock_save(monkeypatch)
+
+        payload = {
+            **FLAT_PAYLOAD,
+            "answers": {"vehicle-price": "30000", "vehicle-type": "Truck"},
+        }
+        _client().post("/findback", json=payload)
+
+        finder_mock.assert_awaited_once()
+        assert finder_mock.call_args.kwargs["vehicle_type"] is None
+
+    def _mock_dealer_bank_ids(self, monkeypatch, bank_ids=None, side_effect=None) -> AsyncMock:
+        mock = AsyncMock(return_value=bank_ids, side_effect=side_effect)
+        monkeypatch.setattr("app.api.routers.findback.get_dealer_bank_ids", mock)
+        return mock
+
+    def test_dealer_id_given_restricts_search_to_dealer_network(self, monkeypatch) -> None:
+        _disable_db_checks(monkeypatch)
+        self._mock_prequal(monkeypatch)
+        finder_mock = self._mock_bank_finder(monkeypatch, offer=None)
+        dealer_mock = self._mock_dealer_bank_ids(monkeypatch, bank_ids=[2, 5])
+        self._mock_engine(monkeypatch)
+        self._mock_save(monkeypatch)
+
+        payload = {**FLAT_PAYLOAD, "dealer_id": "D-001", "answers": {"vehicle-price": "30000"}}
+        _client().post("/findback", json=payload)
+
+        dealer_mock.assert_awaited_once_with("D-001")
+        finder_mock.assert_awaited_once()
+        assert finder_mock.call_args.kwargs["bank_ids"] == [2, 5]
+
+    def test_no_dealer_id_searches_every_bank(self, monkeypatch) -> None:
+        _disable_db_checks(monkeypatch)
+        self._mock_prequal(monkeypatch)
+        finder_mock = self._mock_bank_finder(monkeypatch, offer=None)
+        dealer_mock = self._mock_dealer_bank_ids(monkeypatch)
+        self._mock_engine(monkeypatch)
+        self._mock_save(monkeypatch)
+
+        payload = {**FLAT_PAYLOAD, "answers": {"vehicle-price": "30000"}}
+        _client().post("/findback", json=payload)
+
+        dealer_mock.assert_not_awaited()
+        finder_mock.assert_awaited_once()
+        assert finder_mock.call_args.kwargs["bank_ids"] is None
+
+    def test_dealer_hub_unavailable_falls_back_to_searching_all_banks(self, monkeypatch) -> None:
+        """dealer-hub-backend being down must not fail /findback — it just
+        degrades to searching every bank, same best-effort philosophy as
+        the rest of the bank-finder step."""
+        from app.integrations.dealer_hub_client import DealerHubUnavailableError
+
+        _disable_db_checks(monkeypatch)
+        self._mock_prequal(monkeypatch)
+        finder_mock = self._mock_bank_finder(monkeypatch, offer=None)
+        self._mock_dealer_bank_ids(monkeypatch, side_effect=DealerHubUnavailableError("connection refused"))
+        self._mock_engine(monkeypatch)
+        self._mock_save(monkeypatch)
+
+        payload = {**FLAT_PAYLOAD, "dealer_id": "D-001", "answers": {"vehicle-price": "30000"}}
+        resp = _client().post("/findback", json=payload)
+
+        assert resp.status_code == 200
+        finder_mock.assert_awaited_once()
+        assert finder_mock.call_args.kwargs["bank_ids"] is None
+
+    def test_matched_banks_included_in_response_and_saved(self, monkeypatch) -> None:
+        """All matched banks (not just the best) reach both the response and
+        the persisted loan application row, per-dealer."""
+        _disable_db_checks(monkeypatch)
+        self._mock_prequal(monkeypatch)
+        offer_a = {
+            "bank_id": 1, "bank_name": "Cheapest CU", "interest_rate": "3.99%",
+            "rate_value": 3.99, "effective_rate": 3.99, "program_name": "Auto",
+            "tier_name": "Gold", "term_in_months": 60, "min_loan_amount": 5000, "max_loan_amount": 50000,
+        }
+        finder_mock = AsyncMock(return_value=[offer_a])
+        monkeypatch.setattr("app.api.routers.findback.find_matching_banks", finder_mock)
+        self._mock_engine(monkeypatch)
+        save_mock = self._mock_save(monkeypatch)
+
+        payload = {**FLAT_PAYLOAD, "dealer_id": "DLR-000004", "answers": {"vehicle-price": "30000"}}
+        resp = _client().post("/findback", json=payload)
+
+        assert resp.status_code == 200
+        assert resp.json()["matched_banks"] == [offer_a]
+        assert resp.json()["best_bank"]["bank_id"] == 1
+
+        kwargs = save_mock.call_args.kwargs
+        assert kwargs["dealer_id"] == "DLR-000004"
+        assert kwargs["matched_banks"] == [offer_a]
+
+    def test_no_dealer_id_saves_none(self, monkeypatch) -> None:
+        _disable_db_checks(monkeypatch)
+        self._mock_prequal(monkeypatch)
+        self._mock_bank_finder(monkeypatch)
+        self._mock_engine(monkeypatch)
+        save_mock = self._mock_save(monkeypatch)
+
+        _client().post("/findback", json=FLAT_PAYLOAD)
+
+        assert save_mock.call_args.kwargs["dealer_id"] is None
+
+    def test_bank_finder_skipped_when_prequal_score_missing(self, monkeypatch) -> None:
+        """No real score (e.g. no-hit result) means bank finder can't run —
+        it must be skipped rather than silently falling back to a guess."""
+        _disable_db_checks(monkeypatch)
+        self._mock_prequal(monkeypatch, score=None)
+        finder_mock = self._mock_bank_finder(monkeypatch, offer=None)
+        self._mock_engine(monkeypatch)
+        self._mock_save(monkeypatch)
+
+        payload = {**FLAT_PAYLOAD, "answers": {"vehicle-price": "30000"}}
+        _client().post("/findback", json=payload)
 
         finder_mock.assert_not_awaited()

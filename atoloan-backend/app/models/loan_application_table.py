@@ -1,4 +1,5 @@
 from sqlalchemy import (
+    BigInteger,
     Column,
     DateTime,
     Integer,
@@ -17,6 +18,13 @@ loan_applications_table = Table(
     "loan_applications",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
+    # Which dealer's soft-pull tab this application was submitted through —
+    # null for applications submitted directly via atoloan-ui (no dealer).
+    Column("dealer_id", String(20)),
+    # Deterministic hash of the applicant's email — same value as
+    # users.user_id for this email, so an applicant's applications can be
+    # grouped/joined by a stable key instead of raw email matching.
+    Column("user_id", BigInteger),
     # User identity
     Column("email", String(320)),
     Column("first_name", String(100), nullable=False),
@@ -46,6 +54,9 @@ loan_applications_table = Table(
     Column("term_in_months", Integer),
     Column("min_loan_amount", Integer),
     Column("max_loan_amount", Integer),
+    # Every matched bank's own offer (not just the best one) — one row per
+    # eligible bank, ranked cheapest first, from find_matching_banks().
+    Column("matched_banks", JSONB),
     Column(
         "created_at",
         DateTime(timezone=True),

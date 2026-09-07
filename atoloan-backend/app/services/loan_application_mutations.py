@@ -1,6 +1,7 @@
 """
 Persist findback results: upsert user record, insert loan application row.
 """
+import hashlib
 import logging
 from typing import Optional
 
@@ -11,6 +12,21 @@ from app.models.loan_application_table import loan_applications_table
 from app.models.user_table import user_table
 
 logger = logging.getLogger(__name__)
+
+
+def user_id_from_email(email: str) -> int:
+    """
+    Deterministic numeric id derived from the email — same email always
+    produces the same user_id, so it can be used to tie a user's records
+    together (and as a stable dedup key) without a lookup. Not a security
+    hash: emails aren't secret, this is purely an identifier.
+
+    First 15 hex digits of SHA-256(lowercased, trimmed email) as an int —
+    fits comfortably inside a signed 64-bit BIGINT (max ~9.2e18 vs this
+    value's max ~1.15e18).
+    """
+    digest = hashlib.sha256(email.strip().lower().encode("utf-8")).hexdigest()
+    return int(digest[:15], 16)
 
 
 async def save_findback_result(
@@ -30,8 +46,12 @@ async def save_findback_result(
     credit_score: Optional[int],
     # 700Credit prequal result dict (from PrequalResult.to_dict())
     prequal: dict,
-    # best bank offer dict (from find_best_bank) or None
+    # best bank offer dict (from find_best_bank / matched_banks[0]) or None
     best_bank: Optional[dict],
+    # which dealer's soft-pull tab this came through, or None
+    dealer_id: Optional[str] = None,
+    # every matched bank's own offer (from find_matching_banks), or None
+    matched_banks: Optional[list] = None,
 ) -> int:
     """
     Upsert the user record then insert a new loan_applications row.
@@ -39,11 +59,13 @@ async def save_findback_result(
     Returns the new loan application id.
     """
     # --- 1. Upsert user ---
+    user_id = user_id_from_email(email)
     await conn.execute(
         text("""
-            INSERT INTO users (email, first_name, last_name, address, city, state, zipcode, phone_number)
-            VALUES (:email, :first_name, :last_name, :address, :city, :state, :zipcode, :phone_number)
+            INSERT INTO users (email, user_id, first_name, last_name, address, city, state, zipcode, phone_number)
+            VALUES (:email, :user_id, :first_name, :last_name, :address, :city, :state, :zipcode, :phone_number)
             ON CONFLICT (email) DO UPDATE SET
+                user_id      = EXCLUDED.user_id,
                 first_name   = EXCLUDED.first_name,
                 last_name    = EXCLUDED.last_name,
                 address      = COALESCE(EXCLUDED.address, users.address),
@@ -55,6 +77,7 @@ async def save_findback_result(
         """),
         {
             "email": email,
+            "user_id": user_id,
             "first_name": first_name,
             "last_name": last_name,
             "address": address,
@@ -64,7 +87,7 @@ async def save_findback_result(
             "phone_number": phone_number,
         },
     )
-    logger.info("Upserted user: %s", email)
+    logger.info("Upserted user: %s (user_id=%d)", email, user_id)
 
     # --- 2. Insert loan application ---
     # Strip raw_xml from prequal before storing as JSONB
@@ -72,6 +95,8 @@ async def save_findback_result(
 
     result = await conn.execute(
         insert(loan_applications_table).values(
+            dealer_id=dealer_id,
+            user_id=user_id,
             email=email,
             first_name=first_name,
             last_name=last_name,
@@ -97,6 +122,7 @@ async def save_findback_result(
             term_in_months=best_bank.get("term_in_months") if best_bank else None,
             min_loan_amount=best_bank.get("min_loan_amount") if best_bank else None,
             max_loan_amount=best_bank.get("max_loan_amount") if best_bank else None,
+            matched_banks=matched_banks,
         ).returning(loan_applications_table.c.id)
     )
     app_id = result.scalar_one()

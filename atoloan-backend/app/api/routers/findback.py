@@ -3,15 +3,17 @@
 """
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.config import get_settings
 from app.core.dependencies import get_conn
 from app.db import get_engine
+from app.integrations.dealer_hub_client import DealerHubUnavailableError, get_dealer_bank_ids
 from app.integrations.seven_hundred import SevenHundredCreditClient
-from app.services.bank_finder import find_best_bank
+from app.services.application_email import send_application_summary_email
+from app.services.bank_finder import find_matching_banks, get_term_options_for_offer
 from app.services.loan_application_mutations import save_findback_result
 
 logger = logging.getLogger(__name__)
@@ -20,7 +22,7 @@ router = APIRouter(tags=["findback"])
 
 
 @router.post("/findback")
-async def findback(request: Request) -> dict:
+async def findback(request: Request, background_tasks: BackgroundTasks) -> dict:
     """
     Submit a pre-qualification request to 700Credit then run the bank finder
     to return the best rate offer alongside the credit result.
@@ -94,7 +96,9 @@ async def findback(request: Request) -> dict:
     # --- Bank Finder (best-effort, does not fail the request if unavailable) ---
     down_payment = _resolve_down_payment(original_payload)
     vehicle_price = _resolve_vehicle_price(original_payload)
-    credit_score = 740  # placeholder until 700Credit returns an actual score
+    vehicle_type = _resolve_vehicle_type(original_payload)
+    vehicle_mileage = _resolve_vehicle_mileage(original_payload)
+    credit_score = result.score
     zipcode = payload.get("zip_code")
 
     # loan_amount is what actually gets financed — vehicle price minus down
@@ -104,21 +108,76 @@ async def findback(request: Request) -> dict:
     if vehicle_price and vehicle_price > (down_payment or 0):
         loan_amount = vehicle_price - (down_payment or 0)
 
+    # DTI ratio (existing monthly debt / monthly income, as a percentage) —
+    # optional. Only computable when 700Credit returned trade line data
+    # (result.monthly_debt) and the applicant provided monthly income.
+    monthly_income = _resolve_monthly_income(original_payload)
+    dti_ratio = None
+    if result.monthly_debt is not None and monthly_income:
+        dti_ratio = (result.monthly_debt / monthly_income) * 100
+
+    # LTV ratio (loan_amount / vehicle_price, as a percentage) — used to apply
+    # bank "ltv_threshold" rate adjustments. Only computable when we have
+    # both a resolved loan_amount and vehicle_price (same guard as above).
+    ltv_ratio = None
+    if loan_amount and vehicle_price:
+        ltv_ratio = (loan_amount / vehicle_price) * 100
+
+    # Dealer-scoped search: if a dealer_id was supplied, restrict bank
+    # matching to that dealer's mapped network (dealer-hub-backend owns
+    # this mapping). No dealer_id means search every eligible bank, same
+    # as before this parameter existed. If dealer-hub-backend itself is
+    # unreachable, fall back to searching all banks rather than failing
+    # the request — same best-effort philosophy as the rest of this step.
+    dealer_id = original_payload.get("dealer_id")
+    bank_ids = None
+    if dealer_id:
+        try:
+            bank_ids = await get_dealer_bank_ids(str(dealer_id))
+            logger.info("Dealer %s network: %d bank(s)", dealer_id, len(bank_ids))
+        except DealerHubUnavailableError:
+            logger.exception(
+                "Dealer hub unavailable — searching all banks instead of dealer %s's network", dealer_id
+            )
+            bank_ids = None
+
+    matched_banks: list = []
     best_offer = None
     if loan_amount and credit_score and zipcode:
         try:
             async with get_engine().begin() as conn:
-                best_offer = await find_best_bank(
+                matched_banks = await find_matching_banks(
                     conn,
+                    dti_ratio=dti_ratio,
                     zipcode=str(zipcode),
                     loan_amount=float(loan_amount),
                     credit_score=int(credit_score),
+                    ltv_ratio=ltv_ratio,
+                    vehicle_type=vehicle_type,
+                    vehicle_mileage=vehicle_mileage,
+                    bank_ids=bank_ids,
                 )
-            if best_offer:
+                best_offer = matched_banks[0] if matched_banks else None
+                if best_offer:
+                    try:
+                        rate_delta = best_offer["effective_rate"] - best_offer["rate_value"]
+                        best_offer["term_options"] = await get_term_options_for_offer(
+                            conn,
+                            bank_id=best_offer["bank_id"],
+                            program_name=best_offer["program_name"],
+                            tier_name=best_offer["tier_name"],
+                            credit_score=int(credit_score),
+                            loan_amount=float(loan_amount),
+                            rate_delta=rate_delta,
+                        )
+                    except Exception:
+                        logger.exception("Failed to load term options — best_bank still returned without them")
+            if matched_banks:
+                response["matched_banks"] = matched_banks
                 response["best_bank"] = best_offer
                 logger.info(
-                    "Bank finder: %s at %s",
-                    best_offer["bank_name"], best_offer["interest_rate"],
+                    "Bank finder: %d matching bank(s), best=%s at %s",
+                    len(matched_banks), best_offer["bank_name"], best_offer["interest_rate"],
                 )
             else:
                 logger.warning("Bank finder: no eligible banks for zipcode=%s", zipcode)
@@ -148,11 +207,21 @@ async def findback(request: Request) -> dict:
                 credit_score=int(credit_score) if credit_score else None,
                 prequal=result.to_dict(),
                 best_bank=best_offer,
+                dealer_id=str(dealer_id) if dealer_id else None,
+                matched_banks=matched_banks or None,
             )
         response["application_id"] = app_id
         logger.info("Saved loan application id=%d for %s", app_id, payload["email"])
     except Exception:
         logger.exception("Failed to save loan application — continuing")
+
+    background_tasks.add_task(
+        _send_summary_email_task,
+        to_address=payload["email"],
+        first_name=payload["first_name"],
+        credit_score=int(credit_score) if credit_score else None,
+        best_offer=best_offer,
+    )
 
     return response
 
@@ -178,6 +247,22 @@ async def validate_zipcode(
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _send_summary_email_task(
+    *, to_address: str, first_name: str, credit_score: int | None, best_offer: dict | None
+) -> None:
+    """Runs as a FastAPI background task, after the response is sent — a
+    slow or failing email send must never delay or fail /findback itself."""
+    try:
+        send_application_summary_email(
+            to_address=to_address,
+            first_name=first_name,
+            credit_score=credit_score,
+            best_offer=best_offer,
+        )
+    except Exception:
+        logger.exception("Failed to send application summary email to %s", to_address)
+
 
 def _resolve_down_payment(original_payload: dict) -> float | None:
     """Extract a numeric down payment from the raw request payload."""
@@ -216,5 +301,45 @@ def _resolve_vehicle_price(original_payload: dict) -> float | None:
             return float(s)
         except (ValueError, IndexError):
             logger.warning("Could not parse vehicle-price: %s", price)
+
+    return None
+
+
+def _resolve_vehicle_type(original_payload: dict) -> str | None:
+    """Extract the vehicle type from the raw request payload. Must match
+    one of the literal values loan_program_items.vehicle_type is stored
+    as (see app/models/rate_sheet.py VehicleType) — anything else is
+    treated as unset rather than guessed at."""
+    answers = original_payload.get("answers", {})
+    value = answers.get("vehicle-type")
+    if value in ("New", "Used", "Certified Pre-Owned"):
+        return value
+    if value:
+        logger.warning("Unrecognized vehicle-type: %s", value)
+    return None
+
+
+def _resolve_vehicle_mileage(original_payload: dict) -> int | None:
+    """Extract a numeric vehicle mileage from the raw request payload."""
+    answers = original_payload.get("answers", {})
+    mileage = answers.get("vehicle-mileage")
+    if mileage:
+        try:
+            return int(float(str(mileage)))
+        except (ValueError, TypeError):
+            logger.warning("Could not parse vehicle-mileage: %s", mileage)
+
+    return None
+
+
+def _resolve_monthly_income(original_payload: dict) -> float | None:
+    """Extract a numeric monthly income from the raw request payload."""
+    answers = original_payload.get("answers", {})
+    income = answers.get("monthly-income")
+    if income:
+        try:
+            return float(str(income))
+        except ValueError:
+            logger.warning("Could not parse monthly-income: %s", income)
 
     return None
