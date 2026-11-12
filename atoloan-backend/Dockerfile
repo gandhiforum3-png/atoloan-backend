@@ -1,13 +1,4 @@
-FROM python:3.12-slim
-
-# System dependencies required by camelot-py, pytesseract, and pdf2image
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ghostscript \
-    tesseract-ocr \
-    poppler-utils \
-    libgl1 \
-    libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+FROM python:3.12.16-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
 
 WORKDIR /app
 
@@ -16,8 +7,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Ensure upload directories exist at runtime
-RUN mkdir -p upload_pdf user_uploaded_documents
+# Unprivileged runtime user (UID matches runAsUser in the k8s manifests).
+# Legacy upload dirs stay writable for the compose volumes that mount them.
+RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app \
+    && mkdir -p user_uploaded_documents upload_pdf \
+    && chown app:app user_uploaded_documents upload_pdf
+USER 10001
 
 EXPOSE 8000
 

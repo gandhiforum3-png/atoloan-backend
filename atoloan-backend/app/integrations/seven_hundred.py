@@ -5,7 +5,8 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Literal
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
+from defusedxml import DefusedXmlException
 
 import requests
 
@@ -69,7 +70,6 @@ class SevenHundredCreditClient:
         bureau: Literal["TU", "XPN", "EFX"] = "TU",
         ssn: Optional[str] = None,
         app_modified: bool = False,
-        extra_fields: Optional[dict] = None,
     ) -> PrequalResult:
         name_value = f"{first_name} {last_name}"
 
@@ -91,8 +91,6 @@ class SevenHundredCreditClient:
             data["SSN"] = ssn
         if app_modified:
             data["APP_MODIFIED"] = "Y"
-        if extra_fields:
-            data.update(extra_fields)
 
         headers = {}
         if self.client_id and self.client_secret:
@@ -101,8 +99,9 @@ class SevenHundredCreditClient:
         resp = requests.post(self.request_url, data=data, headers=headers, timeout=self.timeout)
         if not resp.ok:
             logger.error(
-                "700Credit prequalify request failed: status=%s account_set=%s password_set=%s body=%s",
-                resp.status_code, bool(self.account), bool(self.password), resp.text[:1000],
+                # never the body: an error response can echo the applicant's PII
+                "700Credit prequalify request failed: status=%s account_set=%s password_set=%s",
+                resp.status_code, bool(self.account), bool(self.password),
             )
         resp.raise_for_status()
         return self._parse_prequal_response(resp.text)
@@ -147,8 +146,8 @@ class SevenHundredCreditClient:
         res = requests.post(token_url, json=payload, timeout=self.timeout)
         if not res.ok:
             logger.error(
-                "700Credit token request failed: status=%s client_id_set=%s client_secret_set=%s body=%s",
-                res.status_code, bool(self.client_id), bool(self.client_secret), res.text[:1000],
+                "700Credit token request failed: status=%s client_id_set=%s client_secret_set=%s",
+                res.status_code, bool(self.client_id), bool(self.client_secret),
             )
         res.raise_for_status()
         data = res.json()
@@ -162,7 +161,7 @@ class SevenHundredCreditClient:
         result = PrequalResult(raw_xml=xml_text)
         try:
             root = ET.fromstring(xml_text)
-        except ET.ParseError:
+        except (ET.ParseError, DefusedXmlException):  # malformed, or entity/DTD tricks
             return result
 
         error_el = root.find(".//Creditsystem_Error")

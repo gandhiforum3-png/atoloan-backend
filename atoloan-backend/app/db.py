@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.models.user_table import metadata
 import app.models.loan_application_table  # registers loan_applications in shared metadata  # noqa: F401
+import app.models.customer_tables  # registers customer_login_codes / customer_sessions  # noqa: F401
 
 _engine: Optional[AsyncEngine] = None
 
@@ -50,7 +51,8 @@ def get_database_url(
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
-        _engine = create_async_engine(get_database_url(), pool_pre_ping=True)
+        # hide_parameters: DB errors would otherwise put applicant PII (name, email, address) in the logs
+        _engine = create_async_engine(get_database_url(), pool_pre_ping=True, hide_parameters=True)
     return _engine
 
 

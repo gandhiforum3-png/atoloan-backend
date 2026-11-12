@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: atoloan-backend
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: atoloan-backend/requirements.txt
+      - run: pip install -r requirements.txt
+      # integration/ hits live 700Credit + Postgres; unit tests mock both
+      - run: python -m pytest -q --ignore=tests/integration
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks scans the whole history
+      - name: Dependency CVEs
+        run: pipx run pip-audit -r requirements.txt
+      - name: SAST + secrets patterns
+        run: pipx run semgrep scan --config p/default --config p/secrets --error --metrics off
+      - name: Secrets in git history
+        working-directory: .
+        run: docker run --rm -v "$PWD":/repo ghcr.io/gitleaks/gitleaks:v8.21.2 git /repo --no-banner --redact
+      - name: Build image
+        run: docker build -t atoloan-api:ci .
+      - name: Image CVEs
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: atoloan-api:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"

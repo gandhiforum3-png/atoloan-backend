@@ -3,10 +3,8 @@ Health-check and utility endpoints.
 """
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy.ext.asyncio import AsyncConnection
+from fastapi import APIRouter, HTTPException
 
-from app.core.dependencies import get_conn
 from app.db import test_connection
 
 logger = logging.getLogger(__name__)
@@ -28,9 +26,3 @@ async def db_check() -> dict:
         raise HTTPException(status_code=500, detail="database connection failed") from exc
     return {"status": "ok"}
 
-
-@router.post("/echo")
-async def echo(request: Request) -> dict:
-    payload = await request.json()
-    logger.info("echo payload: %s", payload)
-    return {"received": payload}

@@ -1,19 +1,18 @@
-fastapi
-uvicorn[standard]
-sqlalchemy>=2.0
-asyncpg
-requests
-boto3
-pytest
-pytest-asyncio
-python-multipart
-pdfplumber
-camelot-py
-pytesseract
-pdf2image
-pillow
+# Pinned to tested versions — bump deliberately and run `pip-audit -r requirements.txt`
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+sqlalchemy==2.0.52
+asyncpg==0.31.0
+requests==2.34.2
+defusedxml==0.7.1
+httpx==0.28.1
+boto3==1.43.93
+pytest==9.1.1
+pytest-asyncio==1.4.0
+python-multipart==0.0.32
 pydantic==2.12.5
-pydantic-settings>=2.0
-langchain>=0.1.0
-langchain-anthropic>=0.3.0
-python-dotenv
+pydantic-settings==2.15.0
+anthropic==1.5.0
+python-dotenv==1.2.3
+# transitive (requests/boto3/httpx) — pinned past PYSEC-2026-4175..4177
+urllib3==2.8.0

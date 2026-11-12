@@ -1,0 +1,11 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /atoloan-backend
+    schedule: { interval: weekly }
+  - package-ecosystem: docker # keeps the digest-pinned base image patched
+    directory: /atoloan-backend
+    schedule: { interval: weekly }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }

@@ -46,6 +46,8 @@ def _dummy_prequal(result_code: str = "0", score: int = 740) -> PrequalResult:
         tier="A",
         score_range="720-850",
         transid="TX123",
+        token="report-access-token",
+        iframe_url="https://700credit.example/report?t=x",
     )
 
 
@@ -59,6 +61,7 @@ FLAT_PAYLOAD = {
     "state": "CA",
     "zip_code": "94102",
     "otherDownPayment": "5000",
+    "consent": True,
 }
 
 NESTED_PAYLOAD = {
@@ -73,6 +76,7 @@ NESTED_PAYLOAD = {
         "zip": "94102",
     },
     "otherDownPayment": "5000",
+    "consent": True,
 }
 
 
@@ -176,6 +180,11 @@ class TestSaveFindbackResult:
             raw = insert_values.get("prequal_raw")
             if raw is not None:
                 assert "raw_xml" not in raw.value
+        # The credit-file access token and report URL never reach the database
+        assert insert_values, "expected the INSERT to carry bound values"
+        raw = insert_values["prequal_raw"].value
+        assert not {"raw_xml", "token", "iframe_url"} & set(raw)
+        assert raw["transid"] == "TX123"
 
     async def test_bank_offer_stored_when_provided(self) -> None:
         """bank_id, bank_name and interest_rate from best_bank reach the INSERT."""
@@ -278,7 +287,8 @@ class TestFindbackRouterFields:
             "zip_code": "94102",
             # email intentionally omitted
         }
-        resp = client.post("/findback", json=payload)
+        # Only dealer-hub must send an email — a customer's comes from the session
+        resp = client.post("/findback", json=payload, headers={"X-Service-Token": "test-service-token"})
 
         assert resp.status_code == 400
         assert "email" in resp.json()["detail"]
@@ -298,7 +308,7 @@ class TestFindbackRouterFields:
                 # email intentionally omitted
             }
         }
-        resp = client.post("/findback", json=payload)
+        resp = client.post("/findback", json=payload, headers={"X-Service-Token": "test-service-token"})
 
         assert resp.status_code == 400
         assert "email" in resp.json()["detail"]
@@ -348,7 +358,7 @@ class TestFindbackRouterFields:
 
         monkeypatch.setattr("app.api.routers.findback.save_findback_result", _failing_save)
 
-        resp = _client().post("/findback", json=FLAT_PAYLOAD)
+        resp = _client().post("/findback", json=FLAT_PAYLOAD, headers={"X-Service-Token": "test-service-token"})
 
         assert resp.status_code == 200
         body = resp.json()

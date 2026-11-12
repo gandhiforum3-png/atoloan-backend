@@ -65,3 +65,6 @@ htmlcov/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+
+# Customer-uploaded PII (legacy local storage) — never commit
+user_uploaded_documents/

@@ -16,3 +16,13 @@ class PrequalResult:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def public_dict(self) -> dict:
+        """The fields safe to return to an API caller."""
+        return {
+            "result_code": self.result_code,
+            "result_description": self.result_description,
+            "score": self.score,
+            "tier": self.tier,
+            "score_range": self.score_range,
+        }

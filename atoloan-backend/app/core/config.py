@@ -8,7 +8,7 @@ Secret loading priority (highest → lowest):
                               when absent (e.g. inside a container)
 
 Non-secret config (PGHOST, PGPORT, PGDATABASE, SEVENCREDIT_ENV, CORS_ORIGINS)
-is supplied via the Kubernetes ConfigMap (backend.yaml / backend-dev.yaml) for
+is supplied via the Kubernetes ConfigMap (atoloan-infra/k8s) for
 deployed environments and via the .env file locally.
 """
 from functools import lru_cache
@@ -31,9 +31,6 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str = ""
 
-    # OpenAI (kept for backward-compat; no longer used by rate_sheet_parser)
-    openai_api_key: str = ""
-
     # 700Credit
     sevencredit_env: str = "test"
     sevencredit_account: str = ""
@@ -48,6 +45,32 @@ class Settings(BaseSettings):
     # CORS allowed origins (comma-separated)
     # Set via CORS_ORIGINS env var (ConfigMap) or .env for local dev
     cors_origins: str = "http://localhost:5173,http://localhost:5174"
+
+    # Shared secret dealer-hub-backend sends as X-Service-Token to reach the
+    # lender-data routes. Empty = those routes refuse every request.
+    service_token: str = ""
+
+    # dealer-hub-backend, called back (with service_token) for a dealer's bank
+    # network so their pulls only match banks they work with. Default = dev.sh port.
+    dealer_hub_base_url: str = "http://localhost:8001"
+
+    # Cloudflare Turnstile secret. When set, /auth/request-code (the only
+    # anonymous entry point) must carry a valid captcha_token.
+    turnstile_secret_key: str = ""
+
+    # Customer sign-in. CUSTOMER_AUTH_SECRET keys the HMAC of emailed codes;
+    # SES_FROM_EMAIL is the verified SES sender. Both required when APP_ENV is set.
+    customer_auth_secret: str = ""
+    ses_from_email: str = ""
+    # Secure session cookie; false only for local http dev
+    customer_cookie_secure: bool = True
+
+    # Deployment name from the ConfigMap (dev/uat/prod); empty = local dev.
+    # Safety checks that are optional locally (captcha) fail closed when set.
+    app_env: str = ""
+
+    # Swagger UI / OpenAPI schema — on for local dev only
+    enable_docs: bool = False
 
     model_config = SettingsConfigDict(
         # env_file is silently ignored when the file does not exist,

@@ -3,17 +3,18 @@ User management endpoints.
 """
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import insert
 from sqlalchemy.exc import IntegrityError
 
+from app.core.security import require_service_token
 from app.db import get_engine
 from app.models.user_create import UserCreate
 from app.models.user_table import user_table
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/users", tags=["users"])
+router = APIRouter(prefix="/users", tags=["users"], dependencies=[Depends(require_service_token)])
 
 
 @router.post("")

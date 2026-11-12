@@ -12,7 +12,8 @@ async def find_best_bank(
     conn: AsyncConnection,
     zipcode: str,
     loan_amount: float,
-    credit_score: int
+    credit_score: int,
+    bank_ids: Optional[list[int]] = None,
 ) -> Optional[dict]:
     """
     Find the best bank with the lowest interest rate for the given criteria.
@@ -23,6 +24,7 @@ async def find_best_bank(
         loan_amount: The amount to be financed (NOT the down payment) —
             compared against each loan program tier's min/max_loan_amount.
         credit_score: User's credit score
+        bank_ids: Only consider these banks (a dealer's network); None = all banks
 
     Returns:
         Dict with best bank info and rate, or None if no eligible bank found
@@ -55,6 +57,9 @@ async def find_best_bank(
 
     # Step 2: Find all eligible banks for this location
     eligible_banks = await _get_eligible_banks(conn, zipcode, user_county)
+    if bank_ids is not None:
+        allowed = set(bank_ids)
+        eligible_banks = [b for b in eligible_banks if b["bank_id"] in allowed]
     if not eligible_banks:
         logging.warning(f"[BANK FINDER] No eligible banks found for zipcode {zipcode}")
         return None
@@ -137,14 +142,18 @@ async def _get_eligible_banks(
             out_region_list
         FROM bank_info
         WHERE
-            -- Bank accepts out of region loans (entire USA)
-            accept_out_region_loans = true
-            OR
-            -- No restrictions specified (entire USA)
-            (out_region_list IS NULL OR out_region_list = '{}')
-            OR
-            -- User's county is in the eligible list
-            :user_county = ANY(out_region_list)
+            -- Only admin-approved lenders are ever offered to customers
+            approval_status = 'approved'
+            AND (
+                -- Bank accepts out of region loans (entire USA)
+                accept_out_region_loans = true
+                OR
+                -- No restrictions specified (entire USA)
+                (out_region_list IS NULL OR out_region_list = '{}')
+                OR
+                -- User's county is in the eligible list
+                :user_county = ANY(out_region_list)
+            )
         ORDER BY name
     """)
 

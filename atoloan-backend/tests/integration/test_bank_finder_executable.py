@@ -57,8 +57,8 @@ async def _setup(conn: AsyncConnection) -> None:
     for b in MOCK_BANKS:
         await conn.execute(
             text("""
-                INSERT INTO bank_info (bank_id, name, accept_out_region_loans, out_region_list)
-                VALUES (:bank_id, :name, :accept_out_region_loans, :out_region_list)
+                INSERT INTO bank_info (bank_id, name, accept_out_region_loans, out_region_list, approval_status)
+                VALUES (:bank_id, :name, :accept_out_region_loans, :out_region_list, 'approved')
                 ON CONFLICT (bank_id) DO NOTHING
             """),
             b,

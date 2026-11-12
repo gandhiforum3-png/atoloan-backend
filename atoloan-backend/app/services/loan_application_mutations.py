@@ -1,7 +1,8 @@
 """
-Persist findback results: upsert user record, insert loan application row.
+Persist findback results: insert user record if new, insert loan application row.
 """
 import logging
+from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import insert, text
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.models.loan_application_table import loan_applications_table
 from app.models.user_table import user_table
+from app.services.customer_auth import normalize_email
 
 logger = logging.getLogger(__name__)
 
@@ -32,26 +34,42 @@ async def save_findback_result(
     prequal: dict,
     # best bank offer dict (from find_best_bank) or None
     best_bank: Optional[dict],
+    upload_token_hash: Optional[str] = None,
+    dealer_id: Optional[str] = None,
+    consent_at: Optional[datetime] = None,
+    client_ip: Optional[str] = None,
+    customer_email: Optional[str] = None,
 ) -> int:
     """
-    Upsert the user record then insert a new loan_applications row.
+    Insert the user record if new, then insert a new loan_applications row.
 
     Returns the new loan application id.
     """
-    # --- 1. Upsert user ---
+    # One spelling per address, whoever typed it (customer, dealer, guest)
+    email = normalize_email(email)
+    # --- 1. Insert user if new ---
+    # Unverified (dealer/service) pulls never rewrite an existing record. A pull
+    # from the customer's own verified session fills profile fields that are
+    # still empty — so their next application is pre-filled — and never
+    # overwrites what they've already set. Each application keeps its own snapshot.
+    on_conflict = (
+        """DO UPDATE SET
+                first_name   = CASE WHEN users.first_name = '' THEN EXCLUDED.first_name ELSE users.first_name END,
+                last_name    = CASE WHEN users.last_name = '' THEN EXCLUDED.last_name ELSE users.last_name END,
+                address      = COALESCE(users.address, EXCLUDED.address),
+                city         = COALESCE(users.city, EXCLUDED.city),
+                state        = COALESCE(users.state, EXCLUDED.state),
+                zipcode      = COALESCE(users.zipcode, EXCLUDED.zipcode),
+                phone_number = COALESCE(users.phone_number, EXCLUDED.phone_number),
+                last_modified_at = NOW()"""
+        if customer_email
+        else "DO NOTHING"
+    )
     await conn.execute(
-        text("""
+        text(f"""
             INSERT INTO users (email, first_name, last_name, address, city, state, zipcode, phone_number)
             VALUES (:email, :first_name, :last_name, :address, :city, :state, :zipcode, :phone_number)
-            ON CONFLICT (email) DO UPDATE SET
-                first_name   = EXCLUDED.first_name,
-                last_name    = EXCLUDED.last_name,
-                address      = COALESCE(EXCLUDED.address, users.address),
-                city         = COALESCE(EXCLUDED.city, users.city),
-                state        = COALESCE(EXCLUDED.state, users.state),
-                zipcode      = COALESCE(EXCLUDED.zipcode, users.zipcode),
-                phone_number = COALESCE(EXCLUDED.phone_number, users.phone_number),
-                last_modified_at = NOW()
+            ON CONFLICT (email) {on_conflict}
         """),
         {
             "email": email,
@@ -64,11 +82,11 @@ async def save_findback_result(
             "phone_number": phone_number,
         },
     )
-    logger.info("Upserted user: %s", email)
 
     # --- 2. Insert loan application ---
-    # Strip raw_xml from prequal before storing as JSONB
-    prequal_raw = {k: v for k, v in prequal.items() if k != "raw_xml"}
+    # The raw report, its access token and the report URL are the consumer's
+    # full credit file — the summary columns are all we keep.
+    prequal_raw = {k: v for k, v in prequal.items() if k not in ("raw_xml", "token", "iframe_url")}
 
     result = await conn.execute(
         insert(loan_applications_table).values(
@@ -97,8 +115,13 @@ async def save_findback_result(
             term_in_months=best_bank.get("term_in_months") if best_bank else None,
             min_loan_amount=best_bank.get("min_loan_amount") if best_bank else None,
             max_loan_amount=best_bank.get("max_loan_amount") if best_bank else None,
+            upload_token_hash=upload_token_hash,
+            dealer_id=dealer_id,
+            consent_at=consent_at,
+            client_ip=client_ip,
+            customer_email=customer_email,
         ).returning(loan_applications_table.c.id)
     )
     app_id = result.scalar_one()
-    logger.info("Inserted loan application id=%d for user %s", app_id, email)
+    logger.info("Inserted loan application id=%d", app_id)
     return app_id

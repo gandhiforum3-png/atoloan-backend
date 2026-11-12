@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 .venv/
 upload_pdf/
+user_uploaded_documents/

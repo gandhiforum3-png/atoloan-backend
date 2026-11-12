@@ -46,6 +46,20 @@ loan_applications_table = Table(
     Column("term_in_months", Integer),
     Column("min_loan_amount", Integer),
     Column("max_loan_amount", Integer),
+    # Legacy (pre-accounts): hash of the guest upload token. Unused now — documents
+    # are uploaded through the customer session.
+    Column("upload_token_hash", String(64)),
+    # S3 keys of the documents uploaded with that token
+    Column("drivers_license_key", String(1024)),
+    Column("paycheck_key", String(1024)),
+    # Verified account that ran this pull (set from the session, never the
+    # payload). Null for guest and dealer pulls — those never show in an account.
+    Column("customer_email", String(320), index=True),
+    # Credit-pull audit trail: who ran it (null = customer self-service),
+    # when the consumer consented, and the request's origin IP
+    Column("dealer_id", String(20)),
+    Column("consent_at", DateTime(timezone=True)),
+    Column("client_ip", String(64)),
     Column(
         "created_at",
         DateTime(timezone=True),

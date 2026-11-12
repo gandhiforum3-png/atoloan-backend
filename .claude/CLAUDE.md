@@ -8,7 +8,6 @@ This repo has a nested structure. The active application lives in `atoloan-backe
 
 ```
 atoloan-backend/          ← outer directory (root)
-├── app/                  ← older/reference copy (not actively run)
 ├── atoloan-backend/      ← ACTIVE application directory
 │   ├── .env              ← environment variables (not committed)
 │   ├── app/
@@ -19,7 +18,6 @@ atoloan-backend/          ← outer directory (root)
 │   │   └── integrations/ ← third-party API clients
 │   ├── tests/            ← pytest test suite
 │   └── requirements.txt
-└── tests/                ← older test suite (mirrors inner)
 ```
 
 **Always work from `atoloan-backend/atoloan-backend/` as the working context** when running the server or tests.
@@ -54,21 +52,17 @@ python test_bank_finder.py
 
 ### Request Flow
 
-1. **PDF Upload** (`POST /ratesheetuploader`): PDF → `pdf_parser_v2.py` (pdfplumber/camelot table merging) → markdown file saved to `upload_pdf/` → `rate_sheet_parser.py` (LangChain/GPT-4 structured extraction) → parsed JSON returned
-2. **Rate Sheet Save** (`POST /update`): parsed JSON → `credit_union_mutations.py` → PostgreSQL (`bank_info`, `rate_policy_items`, `loan_program_items`)
+1. **PDF Upload** (`POST /ratesheetuploader`): PDF → `rate_sheet_parser.py` (PDF sent directly to Claude, structured output into `CreditUnionRateSheet`) → parsed JSON returned
+2. **Rate Sheet Save** (`POST /update`): parsed JSON → `credit_unions.py` → PostgreSQL (`bank_info`, `rate_policy_items`, `loan_program_items`)
 3. **Credit Check + Bank Matching** (`POST /findback`): user data → 700Credit API (`seven_hundred.py`) → `bank_finder.py` → best rate returned alongside credit result
 
 ### Service Layer (`app/services/`)
 
 | File | Purpose |
 |------|---------|
-| `pdf_parser_v2.py` | PDF → markdown; detects/merges fragmented tables; primary parser |
-| `rate_sheet_parser.py` | LangChain + OpenAI GPT-4 structured extraction from markdown |
-| `credit_union_retrieval.py` | All SELECT queries for credit unions, rate policies, loan programs |
-| `credit_union_mutations.py` | All INSERT/UPSERT operations (bank_info, rate_policy_items, loan_program_items) |
-| `credit_union_deletion.py` | Cascading DELETE for a credit union and all related records |
+| `rate_sheet_parser.py` | Sends the PDF to Claude; structured output into `CreditUnionRateSheet` |
+| `credit_unions.py` | SELECT, UPSERT and cascading DELETE for credit unions, rate policies, loan programs |
 | `bank_finder.py` | Matches user (zipcode, down payment, credit score) to best bank rate |
-| `pdf_validator.py` | Text similarity check between original PDF and generated markdown |
 
 ### Database Schema
 
@@ -81,20 +75,34 @@ python test_bank_finder.py
 ### Key Design Patterns
 
 - All DB access uses **async SQLAlchemy** (`AsyncEngine`, `AsyncConnection`). Connections are obtained in route handlers via `engine.begin()` and passed down to service functions — services never create their own connections.
-- LangChain parsing is CPU/IO blocking; it runs in a `ThreadPoolExecutor` (4 workers) via `loop.run_in_executor()` to avoid blocking the event loop.
-- Pydantic models in `app/models/rate_sheet.py` use `pydantic.v1` compatibility layer (the project pins `pydantic==2.12.5` but models import from `pydantic.v1`).
+- Rate sheet parsing uses the async Anthropic client (`AsyncAnthropic`, streaming), so it never blocks the event loop.
+- Pydantic models in `app/models/rate_sheet.py` are plain Pydantic v2 and double as the structured-output schema for the Claude call.
 
 ### Configuration (`.env` in `atoloan-backend/`)
 
 ```
 PGHOST / PGPORT / PGUSER / PGPASSWORD / PGDATABASE
 DATABASE_URL          # overrides individual PG vars if set
-OPENAI_API_KEY        # required for LLM rate sheet parsing
+ANTHROPIC_API_KEY     # required for LLM rate sheet parsing
 SEVENCREDIT_ENV       # "test" or "prod"
 SEVENCREDIT_ACCOUNT
 SEVENCREDIT_PASSWORD
 SEVENCREDIT_CLIENT_ID
 SEVENCREDIT_CLIENT_SECRET
+SERVICE_TOKEN         # shared with dealer-hub-backend; required (X-Service-Token) on
+                      # /credit-unions, /update, /ratesheetuploader, /users. Unset = those routes 401.
+ENABLE_DOCS           # true locally to expose /docs; off by default
+APP_ENV               # dev/uat/prod from the ConfigMap; empty locally. When set, /auth/request-code
+                      # refuses (503) unless TURNSTILE_SECRET_KEY is configured.
+DEALER_HUB_BASE_URL   # dealer-hub-backend, for a dealer's bank network on dealer pulls (default :8001)
+TURNSTILE_SECRET_KEY  # Cloudflare Turnstile secret (atoloan/turnstile in Secrets Manager)
+APP_PGUSER / APP_PGPASSWORD  # migrations only: least-privilege role created for the API to log in as
 ```
 
-CORS is configured for `http://localhost:5173` and `http://localhost:5174` (Vite dev servers).
+Public routes: `/validate-zipcode`, `/hello`, `/db-check`, and customer sign-in
+`/auth/request-code` (Turnstile), `/auth/verify-code`, `/auth/logout`.
+Customer-session routes (cookie `atoloan_customer_session`): `/me`, `/findback`,
+`/me/applications/{id}/documents`. `/findback` also accepts dealer-hub's X-Service-Token.
+
+CORS is configured for `http://localhost:5173` and `http://localhost:5174` (Vite dev servers),
+with credentials. Cross-origin writes from any other Origin get 403 (CSRF guard in `app/main.py`).

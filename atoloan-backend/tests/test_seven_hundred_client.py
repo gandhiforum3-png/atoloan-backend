@@ -170,3 +170,17 @@ class TestSevenHundredCreditClientBearerToken:
         second_token = client._get_access_token()
 
         assert first_token == second_token  # second call should reuse the cached token
+
+
+def test_prequal_parser_refuses_entity_expansion() -> None:
+    """A hostile/compromised gateway response with DTD entities (billion laughs,
+    XXE) must yield an empty result, not expand or crash the request."""
+    bomb = (
+        '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "aaaaaaaaaa">'
+        '<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">]>'
+        '<Root><Creditsystem_Error id="&b;" message="boom"/></Root>'
+    )
+    client = SevenHundredCreditClient(account="ACC123", password="PASS123")
+    result = client._parse_prequal_response(bomb)
+    assert result.result_code is None
+    assert result.raw_xml == bomb

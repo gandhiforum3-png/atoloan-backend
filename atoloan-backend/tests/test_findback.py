@@ -63,6 +63,7 @@ def test_findback_success(monkeypatch) -> None:
         "city": "Tuscaloosa",
         "state": "AL",
         "zip_code": "80134",
+        "consent": True,
     }
 
     # Patch save so it doesn't hit the DB
@@ -71,13 +72,19 @@ def test_findback_success(monkeypatch) -> None:
         AsyncMock(return_value=1),
     )
 
-    resp = client.post("/findback", json=payload)
+    # A signed-in customer (conftest's stand-in session) never sees the credit result — only dealer-hub does
+    anon = client.post("/findback", json=payload)
+    assert anon.status_code == 200
+    assert "prequal" not in anon.json()
+
+    resp = client.post("/findback", json=payload, headers={"X-Service-Token": "test-service-token"})
 
     print("findback response:", _human_readable(resp.json()))
     assert resp.status_code == 200
     body = resp.json()
     assert body["prequal"]["result_code"] == "0"
-    assert body["prequal"]["raw_xml"] == "<xml/>"
+    # The consumer's raw credit report / token never leave the server
+    assert set(body["prequal"]) == {"result_code", "result_description", "score", "tier", "score_range"}
 
 
 def test_findback_missing_credentials(monkeypatch) -> None:
@@ -98,6 +105,7 @@ def test_findback_missing_credentials(monkeypatch) -> None:
         "city": "Tuscaloosa",
         "state": "AL",
         "zip_code": "80134",
+        "consent": True,
     }
 
     resp = client.post("/findback", json=payload)
@@ -122,6 +130,7 @@ def test_findback_integration(monkeypatch, caplog) -> None:
         "city": "Tuscaloosa",
         "state": "AL",
         "zip_code": "80134",
+        "consent": True,
         "bureau": "TU",
         "app_modified": False,
     }
@@ -172,3 +181,13 @@ def _human_readable(body: dict) -> str:
     if tier:
         parts.append(f"tier={tier}")
     return "; ".join(parts)
+
+
+def test_findback_rejects_unknown_bureau(monkeypatch) -> None:
+    _disable_db_checks(monkeypatch)
+    payload = {
+        "first_name": "A", "last_name": "B", "email": "a@example.com", "address": "1 Main",
+        "city": "X", "state": "AL", "zip_code": "80134", "bureau": "HARDPULL", "consent": True,
+    }
+    resp = _client().post("/findback", json=payload)
+    assert resp.status_code == 400

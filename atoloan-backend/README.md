@@ -27,7 +27,7 @@ User Request
     ▼
 FastAPI (uvicorn)
     │
-    ├── POST /ratesheetuploader  → PDF → pdfplumber/PyMuPDF → GPT-4 → parsed JSON
+    ├── POST /ratesheetuploader  → PDF → Claude (structured output) → parsed JSON
     ├── POST /update             → parsed JSON → PostgreSQL (bank_info, rate_policy_items, loan_program_items)
     ├── POST /findback           → 700Credit pre-qual → bank_finder → save loan_application → response
     └── POST /validate-zipcode  → lookup zipcode table → { valid, city }
@@ -41,7 +41,7 @@ PostgreSQL (AWS RDS in prod, local in dev)
     └── loan_applications
 ```
 
-**Tech stack:** Python 3.12 · FastAPI · async SQLAlchemy 2.0 · asyncpg · PostgreSQL 16 · LangChain + OpenAI GPT-4 · pdfplumber · camelot · 700Credit API
+**Tech stack:** Python 3.12 · FastAPI · async SQLAlchemy 2.0 · asyncpg · PostgreSQL 16 · Anthropic Claude · 700Credit API
 
 ---
 
@@ -55,15 +55,12 @@ Install these before setting up the project.
 |---|---|---|
 | Python 3.12+ | Runtime | `brew install python@3.12` |
 | PostgreSQL | Local database | `brew install postgresql@16` |
-| Ghostscript | PDF processing (camelot) | `brew install ghostscript` |
-| Tesseract OCR | PDF OCR fallback | `brew install tesseract` |
-| Poppler | PDF utilities (pdf2image) | `brew install poppler` |
 
 ### Accounts / API keys required
 
 | Service | Purpose | Where to get it |
 |---|---|---|
-| OpenAI | Rate sheet parsing (GPT-4) | platform.openai.com |
+| Anthropic | Rate sheet parsing (Claude) | console.anthropic.com |
 | 700Credit | Auto loan pre-qualification | 700credit.com (request a test account from your manager) |
 
 ---
@@ -120,8 +117,8 @@ PGDATABASE=atoloan
 # DATABASE_URL overrides the individual PG vars above if set
 # DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/atoloan
 
-# ── OpenAI ───────────────────────────────────────────────────────────────────
-OPENAI_API_KEY=sk-...
+# ── Anthropic ────────────────────────────────────────────────────────────────
+ANTHROPIC_API_KEY=sk-ant-...
 
 # ── 700Credit ────────────────────────────────────────────────────────────────
 SEVENCREDIT_ENV=test                  # "test" for dev, "prod" for production
@@ -133,6 +130,10 @@ SEVENCREDIT_CLIENT_SECRET=<secret>    # optional
 # ── CORS ─────────────────────────────────────────────────────────────────────
 # Comma-separated list of allowed origins (Vite dev server defaults shown)
 CORS_ORIGINS=http://localhost:5173,http://localhost:5174
+
+# ── Dealer hub ───────────────────────────────────────────────────────────────
+# Called back for a dealer's bank network on dealer soft pulls (dev.sh port shown)
+DEALER_HUB_BASE_URL=http://localhost:8001
 ```
 
 ### Variable reference
@@ -145,13 +146,14 @@ CORS_ORIGINS=http://localhost:5173,http://localhost:5174
 | `PGPASSWORD` | Yes | — | PostgreSQL password |
 | `PGDATABASE` | No | `atoloan` | PostgreSQL database name |
 | `DATABASE_URL` | No | — | Full connection string (overrides PG vars) |
-| `OPENAI_API_KEY` | Yes* | — | Required for PDF rate sheet parsing |
+| `ANTHROPIC_API_KEY` | Yes* | — | Required for PDF rate sheet parsing |
 | `SEVENCREDIT_ENV` | No | `test` | `test` or `prod` |
 | `SEVENCREDIT_ACCOUNT` | Yes* | — | Required for `/findback` |
 | `SEVENCREDIT_PASSWORD` | Yes* | — | Required for `/findback` |
 | `SEVENCREDIT_CLIENT_ID` | No | — | 700Credit OAuth client ID |
 | `SEVENCREDIT_CLIENT_SECRET` | No | — | 700Credit OAuth client secret |
 | `CORS_ORIGINS` | No | `http://localhost:5173,...` | Comma-separated allowed origins |
+| `DEALER_HUB_BASE_URL` | No | `http://localhost:8001` | dealer-hub-backend, for a dealer's bank network. Unreachable = dealer pulls get no bank offer |
 
 *Required for the relevant feature to work; the server starts without them but those endpoints will return errors.
 
@@ -198,7 +200,7 @@ pytest tests/test_findback.py -v
 | `tests/test_loan_application.py` | Unit | Nothing |
 | `tests/integration/test_bank_finder*.py` | Integration | Live DB |
 | `tests/integration/test_pdf_*.py` | Integration | PDF files + services |
-| `tests/integration/test_rate_sheet_parser_*.py` | Integration | `OPENAI_API_KEY` |
+| `tests/integration/test_rate_sheet_parser_*.py` | Integration | `ANTHROPIC_API_KEY` |
 
 ---
 
@@ -270,14 +272,10 @@ atoloan-backend/              ← repo root
     │   │   ├── users.py                  ← user management
     │   │   └── documents.py              ← document upload
     │   ├── services/
-    │   │   ├── pdf_parser_hybrid.py      ← picks best of pdfplumber vs PyMuPDF
-    │   │   ├── pdf_parser_v2.py          ← pdfplumber + camelot parser
-    │   │   ├── rate_sheet_parser.py      ← LangChain + GPT-4 structured extraction
+    │   │   ├── rate_sheet_parser.py      ← PDF → Claude structured extraction
     │   │   ├── bank_finder.py            ← matches user to best bank rate
     │   │   ├── loan_application_mutations.py ← save pre-qual results to DB
-    │   │   ├── credit_union_retrieval.py     ← SELECT queries
-    │   │   ├── credit_union_mutations.py     ← INSERT/UPSERT queries
-    │   │   └── credit_union_deletion.py      ← CASCADE DELETE
+    │   │   └── credit_unions.py          ← SELECT / UPSERT / CASCADE DELETE
     │   ├── models/
     │   │   ├── rate_sheet.py             ← Pydantic v2 models for parsed rate sheets
     │   │   ├── user_table.py             ← SQLAlchemy users table + shared metadata
@@ -287,14 +285,10 @@ atoloan-backend/              ← repo root
     ├── scripts/
     │   ├── run_migrations.py             ← DB migration + zipcode seed
     │   ├── california-zip-codes.csv      ← 2,657 CA zip codes
-    │   └── benchmark_parsers.py          ← PDF parser accuracy benchmarking
     ├── tests/
     │   ├── test_findback.py              ← unit tests
     │   ├── test_loan_application.py      ← unit tests
     │   └── integration/                  ← integration tests (require live services)
-    ├── k8s/
-    │   ├── backend-prod-aws.yaml         ← Kubernetes manifests for production
-    │   └── backend-dev-aws.yaml          ← Kubernetes manifests for dev
     ├── Dockerfile
     ├── .dockerignore
     ├── requirements.txt
@@ -328,7 +322,7 @@ Secrets are pulled from AWS Secrets Manager via External Secrets Operator.
 export KUBECONFIG=~/.kube/config-aws-prod
 
 # Deploy / update
-kubectl apply -f k8s/backend-prod-aws.yaml
+kubectl apply -f ../atoloan-infra/k8s/aws-prod/backend-aws-prod.yaml   # manifests live in atoloan-infra
 
 # Watch rollout
 kubectl rollout status deployment/atoloan-api -n atoloan-backend-prod
@@ -347,5 +341,5 @@ These must exist before deploying (created by Terraform in `atoloan-infra`):
 | Secret name | Keys |
 |---|---|
 | `atoloan/postgres-prod` | `PGUSER`, `PGPASSWORD`, `PGHOST`, `PGPORT`, `PGDATABASE` |
-| `atoloan/openai` | `OPENAI_API_KEY` |
+| `atoloan/anthropic` | `ANTHROPIC_API_KEY` |
 | `atoloan/sevencredit` | `SEVENCREDIT_ACCOUNT`, `SEVENCREDIT_PASSWORD`, `SEVENCREDIT_CLIENT_ID`, `SEVENCREDIT_CLIENT_SECRET` |

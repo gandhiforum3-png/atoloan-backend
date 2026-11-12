@@ -7,3 +7,6 @@ __pycache__
 .git
 tests/
 *.md
+user_uploaded_documents/
+upload_pdf/
+.env.*
